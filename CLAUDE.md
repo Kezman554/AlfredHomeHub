@@ -28,6 +28,10 @@ Scripts assume Pi user home at /home/pi/ (confirm on first boot)
 Docker Compose files go in docker/, one per service grouping
 All paths in scripts should be configurable via variables at top of file
 
+Runtime & Deploy
+
+Targets a Raspberry Pi 5 (ARM64, Raspberry Pi OS) running Docker — build for ARM, services run as containers. Develop on laptop → push to GitHub → Pi pulls. Access + deploy steps: see DEPLOY.md.
+
 Reference
 
 Requirements: docs/alfred-home-hub_PRD.md
