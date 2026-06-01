@@ -5,3 +5,7 @@ Alfred Home Hub — Progress Log
   user kezman554, static IP 192.168.1.100, SSH, OS, Docker runtime) and the
   laptop -> GitHub -> Pi pull deploy model.
 - Added a lean Runtime & Deploy pointer to CLAUDE.md.
+- Added docker/docker-compose.yml for Home Assistant (host networking for
+  device discovery, persistent ./ha-config, host timezone, unless-stopped).
+- Added scripts/ha-setup.sh to create the config dir, bring up the stack,
+  and print the access URL. Runtime ha-config dirs already gitignored.
