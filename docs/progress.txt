@@ -1,1 +1,7 @@
 Alfred Home Hub — Progress Log
+
+2026-06-01
+- Added DEPLOY.md documenting the Pi 5 target device (host alfred/alfred.local,
+  user kezman554, static IP 192.168.1.100, SSH, OS, Docker runtime) and the
+  laptop -> GitHub -> Pi pull deploy model.
+- Added a lean Runtime & Deploy pointer to CLAUDE.md.
