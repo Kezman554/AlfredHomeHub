@@ -1,0 +1,22 @@
+# Home Assistant — smart home controller for Alfred Home Hub.
+# Runs on the Raspberry Pi 5 (ARM64). Deploy with scripts/ha-setup.sh.
+
+services:
+  homeassistant:
+    container_name: homeassistant
+    # Official HA image; multi-arch, resolves to ARM64 on the Pi.
+    image: ghcr.io/home-assistant/home-assistant:stable
+
+    volumes:
+      # Persist HA config (configuration.yaml, scenes, DB) on the host,
+      # alongside this compose file. Created at runtime by ha-setup.sh.
+      - ./ha-config:/config
+      # Share the host clock so HA logs and automations use Pi local time.
+      - /etc/localtime:/etc/localtime:ro
+
+    # Host networking is required for device discovery (mDNS/SSDP) of
+    # bulbs, Echos, and other LAN devices. HA serves on host port 8123.
+    network_mode: host
+
+    # Restart on crash and on Pi reboot, but stay down if stopped manually.
+    restart: unless-stopped
