@@ -1,5 +1,9 @@
-# Home Assistant — smart home controller for Alfred Home Hub.
-# Runs on the Raspberry Pi 5 (ARM64). Deploy with scripts/ha-setup.sh.
+# Alfred Home Hub services. Run on the Raspberry Pi 5 (ARM64).
+# Deploy with scripts/ha-setup.sh.
+#
+# Ports on the Pi:
+#   8123 — Home Assistant
+#   8200 — Vault API (read-only vault content for the MorningSync alarm app)
 
 services:
   homeassistant:
@@ -19,4 +23,27 @@ services:
     network_mode: host
 
     # Restart on crash and on Pi reboot, but stay down if stopped manually.
+    restart: unless-stopped
+
+  vault-api:
+    container_name: vault-api
+    build:
+      context: ../src/vault_api
+      dockerfile: Dockerfile
+
+    environment:
+      # Path *inside* the container — matches the mount below.
+      VAULT_PATH: /vault
+
+    volumes:
+      # The vault clone on the Pi, kept current by the vault-sync cron.
+      # Read-only: this API never writes. When write-back lands (append/tick
+      # off a to-do), drop the :ro and revisit.
+      - ${VAULT_HOST_PATH:-/home/kezman554/alfred-vault}:/vault:ro
+      - /etc/localtime:/etc/localtime:ro
+
+    # Published on all interfaces so LAN devices (the alarm app) can reach it.
+    ports:
+      - "8200:8200"
+
     restart: unless-stopped

@@ -23,3 +23,22 @@ Alfred Home Hub — Progress Log
 - Both scripts shellcheck-clean. vault-sync.sh smoke-tested locally against a
   fake origin: fast-forward, divergence, unreachable host, and missing-repo
   paths all verified. setup-vault-sync.sh still needs a live Pi run.
+- Vault sync installed and running on the Pi.
+
+2026-07-14 (later)
+- Added the Vault API (src/vault_api/): read-only FastAPI service serving vault
+  content to the MorningSync alarm app over the LAN. Port 8200 (8123 is HA's),
+  bound 0.0.0.0, documented in DEPLOY.md.
+- Endpoints: GET /health (liveness) and GET /chalkboard (unchecked items from
+  6-life/rolling-todo.md as [{task, date}]; date omitted when the line has no
+  trailing capture date). Missing/unreadable vault degrades to [] with a 200.
+- Added as the vault-api service in docker/docker-compose.yml, built on the Pi
+  from src/vault_api/Dockerfile, with the vault bind-mounted read-only and
+  restart: unless-stopped so it comes up with the stack.
+- Structured for growth: routers/ per resource + a Vault access layer, so
+  write-back (append/tick off a to-do), /daily-schedule, and family-calendar
+  endpoints slot in without a rewrite. None of those built in this card.
+- Tested locally against a fixture vault: both endpoints return valid JSON,
+  checked items excluded, missing-file/missing-vault return [] with 200.
+  NOT yet run on the Pi — needs a pull + `docker compose up -d --build` there,
+  then the curl test from the laptop against 192.168.1.100:8200.

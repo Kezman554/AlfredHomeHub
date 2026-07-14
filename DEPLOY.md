@@ -13,6 +13,13 @@
 
 > `.local` resolution fails from the laptop while a VPN is connected — disconnect the VPN if `alfred.local` won't resolve.
 
+## Service Ports
+
+| Port | Service | Notes |
+|---|---|---|
+| 8123 | Home Assistant | Host networking (device discovery) |
+| 8200 | Vault API | Read-only vault content for the MorningSync alarm app. `http://192.168.1.100:8200` — `/health`, `/chalkboard` |
+
 ## Deploy Model
 
 - Laptop is the source of truth: develop here, push to GitHub (`git@github.com:Kezman554/AlfredHomeHub.git`).
