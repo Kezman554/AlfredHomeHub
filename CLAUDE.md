@@ -10,7 +10,7 @@ docs/ - PRD and progress log
 
 Context
 This repo produces files that run on a Raspberry Pi 5, not this laptop. Claude Code sessions here write configs, scripts, and code that get pushed to GitHub and pulled onto the Pi. The Pi's OS is Raspberry Pi OS (Debian/ARM64).
-The Obsidian vault (separate repo: Alfred-Vault) contains Alfred's architecture docs, personality files (SOUL.md, modes/), and project notes. The Pi clones that vault separately.
+The Obsidian vault (separate private repo: ObsidianVault — git@github.com:Kezman554/ObsidianVault.git) contains Alfred's architecture docs, personality files (SOUL.md, modes/), and project notes. The Pi clones that vault separately to /home/kezman554/alfred-vault and pulls it on a cron schedule (scripts/vault-sync.sh).
 Commands
 
 No local run command — services run on the Pi via Docker
@@ -24,7 +24,7 @@ Update docs/progress.txt briefly if significant work was done
 
 Conventions
 
-Scripts assume Pi user home at /home/pi/ (confirm on first boot)
+Scripts assume the Pi user is kezman554, home at /home/kezman554/
 Docker Compose files go in docker/, one per service grouping
 All paths in scripts should be configurable via variables at top of file
 
@@ -36,5 +36,5 @@ Reference
 
 Requirements: docs/alfred-home-hub_PRD.md
 Progress log: docs/progress.txt
-Architecture docs: Alfred-Vault (hardware-roadmap.md, data-routing-architecture.md, pi-transition-considerations.md, alfred-alexa-relationship.md)
+Architecture docs: ObsidianVault (hardware-roadmap.md, data-routing-architecture.md, pi-transition-considerations.md, alfred-alexa-relationship.md)
 Task prompts: Kanban app
