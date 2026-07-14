@@ -9,3 +9,17 @@ Alfred Home Hub — Progress Log
   device discovery, persistent ./ha-config, host timezone, unless-stopped).
 - Added scripts/ha-setup.sh to create the config dir, bring up the stack,
   and print the access URL. Runtime ha-config dirs already gitignored.
+
+2026-07-14
+- Built the PULL half of vault sync (the Pi mirrors the private ObsidianVault
+  repo; the WRITE/push half is card T).
+- scripts/vault-sync.sh: git pull --ff-only with timestamped logging and
+  classified error handling (network down, auth failure, divergence, missing
+  repo). Exits non-zero on failure; never merges, resets, or leaves a dirty
+  tree. ff-only is deliberate — see the comment in the script.
+- scripts/setup-vault-sync.sh: idempotent clone + install as a */10 cron job
+  (re-running replaces the entry, never duplicates), then runs one sync.
+- Auth is the pre-existing SSH deploy key; scripts never touch credentials.
+- Both scripts shellcheck-clean. vault-sync.sh smoke-tested locally against a
+  fake origin: fast-forward, divergence, unreachable host, and missing-repo
+  paths all verified. setup-vault-sync.sh still needs a live Pi run.
