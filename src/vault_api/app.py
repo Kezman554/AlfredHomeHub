@@ -13,7 +13,7 @@ import logging
 
 from fastapi import FastAPI
 
-from .routers import chalkboard, health
+from .routers import chalkboard, health, schedule
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -25,3 +25,4 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(chalkboard.router)
+app.include_router(schedule.router)

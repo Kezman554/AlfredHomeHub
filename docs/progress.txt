@@ -42,3 +42,24 @@ Alfred Home Hub — Progress Log
   checked items excluded, missing-file/missing-vault return [] with 200.
   NOT yet run on the Pi — needs a pull + `docker compose up -d --build` there,
   then the curl test from the laptop against 192.168.1.100:8200.
+
+2026-07-15
+- Added GET /daily-schedule to the Vault API (src/vault_api/routers/schedule.py):
+  today's planned items from the current ISO week's plan file at
+  1-daily/reviews/YYYY-Wnn-plan.md. Returns [{task, period}] where period is
+  "am"/"pm"/null.
+- Parser + Vault.daily_schedule_items() live in vault.py: derives the plan file
+  from today via isocalendar(), finds today's day heading ("### Tue 14 Jul"),
+  and reads its bullets. Period comes from an inline "AM:"/"PM:"/"Evening:"/
+  "Night:"/"Pre-breakfast:" prefix, else an AM/PM subheading grouping, else null
+  (morning-ish -> am; afternoon/evening/night -> pm). AM/PM split is optional:
+  plain untagged bullets return period null, not an error.
+- Robust by design: no plan file this week, no section for today, no bullets, or
+  an unreadable vault all return [] with a 200, never a 500.
+- Tests in tests/test_schedule.py (11, all passing): inline prefixes, AM/PM
+  subheadings, untagged bullets, today absent -> [], missing file -> [],
+  unreadable root -> [], trailing "## Notes" section doesn't leak, shape is
+  {task, period} with period only am/pm/null, ISO week path formatting. Also
+  smoke-tested the live endpoint via TestClient against a fixture plan.
+- NOT yet run on the Pi — needs a pull + `docker compose up -d --build`, then
+  curl 192.168.1.100:8200/daily-schedule from the laptop.
