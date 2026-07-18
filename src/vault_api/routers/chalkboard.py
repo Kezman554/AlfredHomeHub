@@ -98,8 +98,18 @@ def sweep_ticked(vault: Vault = Depends(get_vault)) -> dict:
     """Clear completed: remove every ticked line, logging each as COMPLETED.
 
     The same code path the nightly cron triggers (scripts/sweep-todo.sh curls
-    this endpoint); this backs a future UI "clear completed" button. Nothing
-    ticked is a clean no-op — no commit is made.
+    this endpoint); this backs a future UI "clear completed" button. As of
+    the shopping-list family, this also sweeps every active shopping list in
+    the same commit — `swept`/`count`/`items` stay rolling-todo-only (so
+    existing callers, including the sweep script, are unaffected);
+    `shopping_swept`/`shopping_count` carry the shopping side. Nothing ticked
+    anywhere is a clean no-op — no commit is made.
     """
-    swept = vault.sweep_ticked()
-    return {"swept": swept, "count": len(swept), "items": _items(vault)}
+    result = vault.sweep()
+    return {
+        "swept": result.todo_swept,
+        "count": len(result.todo_swept),
+        "items": _items(vault),
+        "shopping_swept": result.shopping_swept,
+        "shopping_count": len(result.shopping_swept),
+    }

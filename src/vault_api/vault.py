@@ -14,7 +14,7 @@ import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .config import GIT_TIMEOUT, GIT_USER_EMAIL, GIT_USER_NAME, WRITE_LOCK_TIMEOUT
@@ -33,6 +33,16 @@ COMPLETED_LOG = "6-life/completed-log.md"
 # cron serialise instead of racing. Lives under .git/ so it is inside the
 # bind-mounted vault but never part of the working tree.
 WRITE_LOCK = ".git/alfred-write.lock"
+
+# Default home for newly created shopping lists. Not the rule for discovery —
+# any vault .md tagged life/shopping + status: active counts, wherever it
+# lives — just where CREATE LIST scaffolds new ones.
+SHOPPING_DIR = "6-life/shopping"
+
+# Sweep capture files for shopping land here, so a future vault session can
+# action any playbook notes named in the swept-from list (e.g. "bought items
+# go to the hardware inventory") — the sweep itself never interprets them.
+INBOX_DIR = "0-inbox"
 
 # Weekly plan files, one per ISO week: 1-daily/reviews/YYYY-Wnn-plan.md.
 PLAN_DIR = "1-daily/reviews"
@@ -102,6 +112,145 @@ def _task_of(line: str) -> str:
     if dated and dated.group("task"):
         return dated.group("task")
     return body
+
+
+# --- Shopping lists -----------------------------------------------------------
+#
+# A discovered family of lists rather than one hardcoded file: any vault .md
+# tagged life/shopping + status: active, wherever it lives. Item lines have no
+# dates (unlike the rolling to-do), and ticked items are returned too — they
+# stay visible (struck through by renderers) until the sweep removes them.
+
+# A shopping-list item, checked or not: "- [ ] item — notes" / "- [x] item".
+_ITEM = re.compile(r"^\s*[-*]\s+\[(?P<box>[ xX])\]\s+(?P<body>.+?)\s*$")
+
+# An H1 heading: "# Title". Deliberately excludes "##" and deeper (the next
+# char after "#" must be whitespace).
+_H1 = re.compile(r"^#\s+(?P<text>.+?)\s*$")
+
+# Vault frontmatter block: "---\n...\n---\n". Only tags/status are needed here.
+_FRONTMATTER = re.compile(r"\A---\r?\n(?P<body>.*?)\r?\n---\r?\n?", re.DOTALL)
+_TAGS_LINE = re.compile(r"^tags:\s*\[(?P<items>.*?)\]\s*$", re.MULTILINE)
+_STATUS_LINE = re.compile(r"^status:\s*(?P<value>\S+)\s*$", re.MULTILINE)
+
+# The "**Format:** ..." convention line every list carries, used to find where
+# a fresh (item-less) list's checklist section starts.
+_FORMAT_LINE = re.compile(r"^\*\*Format:\*\*")
+
+# A line that starts a new, non-checklist section: a heading of any level, or
+# a markdown table row. Used to avoid inserting a new item into prose/tables.
+_SECTION_BOUNDARY = re.compile(r"^(#{1,6}\s|\s*\|)")
+
+# Characters kebab-case keeps; everything else collapses to a single hyphen.
+_KEBAB_INVALID = re.compile(r"[^a-z0-9]+")
+
+
+@dataclass(frozen=True)
+class ShoppingItem:
+    """One item from a shopping list, ticked or not.
+
+    `line` is the raw markdown line, byte-for-byte — same key convention as
+    TodoItem, since shopping items carry no date to disambiguate on.
+    """
+
+    text: str
+    line: str
+    ticked: bool
+
+    def to_json(self) -> dict[str, str | bool]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ShoppingListSummary:
+    """One discovered shopping list: enough to render a picker and a badge."""
+
+    id: str  # vault-relative path — the handle every other endpoint takes
+    title: str
+    total: int
+    unticked: int
+
+    def to_json(self) -> dict[str, str | int]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SweepResult:
+    """What one combined sweep removed, split by source."""
+
+    todo_swept: list[str]
+    shopping_swept: list[dict[str, str]]  # [{"list": title, "item": text}, ...]
+
+
+def parse_shopping_items(text: str) -> list[ShoppingItem]:
+    """Extract every checkbox item (ticked or not) from markdown, in order."""
+    items: list[ShoppingItem] = []
+    for line in text.splitlines():
+        match = _ITEM.match(line)
+        if not match:
+            continue
+        items.append(
+            ShoppingItem(
+                text=match.group("body"), line=line, ticked=match.group("box").lower() == "x"
+            )
+        )
+    return items
+
+
+def _frontmatter(text: str) -> tuple[list[str], str | None]:
+    """(tags, status) from a note's frontmatter block; ([], None) if absent."""
+    match = _FRONTMATTER.match(text)
+    if not match:
+        return [], None
+    body = match.group("body")
+    tags_match = _TAGS_LINE.search(body)
+    tags = [t.strip() for t in tags_match.group("items").split(",")] if tags_match else []
+    status_match = _STATUS_LINE.search(body)
+    status = status_match.group("value") if status_match else None
+    return tags, status
+
+
+def _list_title(text: str) -> str | None:
+    """The note's H1, or None if it has none."""
+    for line in text.splitlines():
+        match = _H1.match(line)
+        if match:
+            return match.group("text")
+    return None
+
+
+def _insertion_index(lines: list[str]) -> int:
+    """Where a new checkbox item line belongs, as an index into `lines`.
+
+    Right after the last existing item if there is one — this can never land
+    inside a trailing prose/table section, since it stops at whatever already
+    follows the last item. For a fresh, item-less list, right after its
+    "**Format:**" line and before whatever section (heading or table) follows
+    it. Failing both, the true end of file, before a trailing newline's empty
+    tail element so one isn't introduced.
+    """
+    last_item = None
+    for i, line in enumerate(lines):
+        if _ITEM.match(line):
+            last_item = i
+    if last_item is not None:
+        return last_item + 1
+
+    format_idx = None
+    for i, line in enumerate(lines):
+        if _FORMAT_LINE.match(line):
+            format_idx = i
+    if format_idx is not None:
+        for i in range(format_idx + 1, len(lines)):
+            if _SECTION_BOUNDARY.match(lines[i]):
+                return i
+
+    return len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+
+
+def _kebab_case(name: str) -> str:
+    """Lowercase, hyphen-joined slug; "" if nothing kebab-able survives."""
+    return _KEBAB_INVALID.sub("-", name.strip().lower()).strip("-")
 
 
 @dataclass(frozen=True)
@@ -316,6 +465,36 @@ class ItemNotFoundError(Exception):
         self.items = items
 
 
+class ListNotFoundError(Exception):
+    """The targeted shopping list id doesn't resolve to a discoverable list.
+
+    Covers a missing file, a file that lost its life/shopping tag or active
+    status, and a malformed id (e.g. path traversal) alike — carries current
+    discovery so the client can refresh and retarget, same as a stale item.
+    """
+
+    def __init__(self, lists: list[ShoppingListSummary]) -> None:
+        super().__init__("shopping list not found")
+        self.lists = lists
+
+
+class ShoppingItemNotFoundError(Exception):
+    """The targeted line is not (or no longer) in the given shopping list."""
+
+    def __init__(self, list_id: str, items: list[ShoppingItem]) -> None:
+        super().__init__("item not found in shopping list")
+        self.list_id = list_id
+        self.items = items
+
+
+class ShoppingListExistsError(Exception):
+    """CREATE LIST targeted a filename that's already taken."""
+
+    def __init__(self, relpath: str) -> None:
+        super().__init__(f"shopping list already exists: {relpath}")
+        self.relpath = relpath
+
+
 class _GitError(Exception):
     """Internal: a git command failed. Translated to VaultSyncError by callers."""
 
@@ -332,7 +511,9 @@ class Vault:
         self.root = root
 
     def _read_text(self, relative_path: str) -> str | None:
-        path = self.root / relative_path
+        return self._read_text_at(self.root / relative_path)
+
+    def _read_text_at(self, path: Path) -> str | None:
         try:
             return path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -390,6 +571,91 @@ class Vault:
         return WeekSchedule(
             week=week, start=first.isoformat(), end=saturday.isoformat(), days=days
         )
+
+    # --- Shopping lists: reads --------------------------------------------------
+
+    def shopping_lists(self) -> list[ShoppingListSummary]:
+        """Every active shopping list in the vault, wherever it lives.
+
+        Discovery is by content, not location: any .md whose frontmatter has
+        both a life/shopping tag and status: active. Unreadable files are
+        skipped (logged), not fatal to the rest of the scan.
+        """
+        return self._scan_shopping_lists()
+
+    def shopping_list_items(self, list_id: str) -> tuple[ShoppingListSummary, list[ShoppingItem]]:
+        """A list's summary and items. Raises ListNotFoundError if `list_id`
+        doesn't resolve to a currently-discoverable active shopping list."""
+        path = self._resolve_shopping_list(list_id)
+        text = self._read_text_at(path) or ""
+        items = parse_shopping_items(text)
+        return self._list_summary(path, text, items), items
+
+    def _scan_shopping_lists(self) -> list[ShoppingListSummary]:
+        summaries: list[ShoppingListSummary] = []
+        for path in sorted(self.root.rglob("*.md")):
+            if ".git" in path.parts:
+                continue
+            text = self._read_text_at(path)
+            if text is None:
+                continue
+            tags, status = _frontmatter(text)
+            if "life/shopping" not in tags or status != "active":
+                continue
+            summaries.append(self._list_summary(path, text, parse_shopping_items(text)))
+        return summaries
+
+    def _list_summary(
+        self, path: Path, text: str, items: list[ShoppingItem]
+    ) -> ShoppingListSummary:
+        relpath = path.relative_to(self.root).as_posix()
+        title = _list_title(text) or path.stem
+        return ShoppingListSummary(
+            id=relpath,
+            title=title,
+            total=len(items),
+            unticked=sum(1 for item in items if not item.ticked),
+        )
+
+    def _resolve_shopping_list(self, list_id: str) -> Path:
+        """The on-disk path for `list_id`, iff it's a live active shopping list.
+
+        Rejects anything that resolves outside the vault root (path traversal)
+        and anything that isn't currently tagged life/shopping + active — a
+        list that was completed or moved is "not found" just like a deleted
+        one, and callers get current discovery to retarget from either way.
+        """
+        try:
+            root_resolved = self.root.resolve(strict=False)
+            candidate = (self.root / list_id).resolve(strict=False)
+            candidate.relative_to(root_resolved)
+        except (ValueError, OSError):
+            raise ListNotFoundError(self._scan_shopping_lists()) from None
+        if not candidate.is_file():
+            raise ListNotFoundError(self._scan_shopping_lists())
+        text = self._read_text_at(candidate)
+        if text is None:
+            raise ListNotFoundError(self._scan_shopping_lists())
+        tags, status = _frontmatter(text)
+        if "life/shopping" not in tags or status != "active":
+            raise ListNotFoundError(self._scan_shopping_lists())
+        return candidate
+
+    def _find_shopping_item(
+        self, list_id: str, lines: list[str], target_line: str, *, require_unticked: bool = False
+    ) -> int:
+        """Index of the exact target line, which must be an item line.
+
+        Requiring the item shape means a write can only ever touch checkbox
+        lines, never frontmatter, headings, prose, or a table row.
+        """
+        match = _ITEM.match(target_line)
+        if match and (not require_unticked or match.group("box") == " "):
+            try:
+                return lines.index(target_line)
+            except ValueError:
+                pass
+        raise ShoppingItemNotFoundError(list_id, parse_shopping_items("\n".join(lines)))
 
     # --- Writes ---------------------------------------------------------------
     #
@@ -452,40 +718,170 @@ class Vault:
                 [ROLLING_TODO, COMPLETED_LOG], f"alfred api: drop '{_task_of(target_line)}'"
             )
 
-    def sweep_ticked(self) -> list[str]:
-        """Remove every '- [x]' line, logging each as completed. Returns them.
+    # --- Shopping lists: writes -------------------------------------------------
 
-        The undo window is tick -> sweep: a ticked line stays in the doc until
-        this runs (nightly cron, or the on-demand endpoint — same code path).
-        Nothing ticked means no commit at all: a clean no-op.
+    def add_shopping_item(self, list_id: str, text: str) -> ShoppingItem:
+        """Insert a new unticked item into `list_id`. See _insertion_index for
+        where — never disturbs any other line, whatever else the file holds."""
+        item_text = text.strip()
+        if not item_text or "\n" in text or "\r" in text:
+            raise ValueError("item text must be a non-empty single line")
+        line = f"- [ ] {item_text}"
+
+        with self._write_lock():
+            self._pull()
+            path = self._resolve_shopping_list(list_id)
+            original = self._read_for_write(path)
+            lines = original.split("\n")
+            lines.insert(_insertion_index(lines), line)
+            path.write_text("\n".join(lines), encoding="utf-8")
+            relpath = path.relative_to(self.root).as_posix()
+            self._commit_and_push([relpath], f"alfred api: add '{item_text}' to {relpath}")
+        return ShoppingItem(text=item_text, line=line, ticked=False)
+
+    def tick_shopping_item(self, list_id: str, target_line: str) -> None:
+        """Flip the targeted item's '- [ ]' to '- [x]', leaving the line in place."""
+        with self._write_lock():
+            self._pull()
+            path = self._resolve_shopping_list(list_id)
+            original = self._read_for_write(path)
+            lines = original.split("\n")
+            index = self._find_shopping_item(list_id, lines, target_line, require_unticked=True)
+            lines[index] = lines[index].replace("[ ]", "[x]", 1)
+            path.write_text("\n".join(lines), encoding="utf-8")
+            relpath = path.relative_to(self.root).as_posix()
+            self._commit_and_push([relpath], f"alfred api: tick item in {relpath}")
+
+    def drop_shopping_item(self, list_id: str, target_line: str) -> None:
+        """Remove the targeted item (ticked or not) and log it as DROPPED,
+        naming the source list — nothing is ever silently destroyed."""
+        today = date.today().isoformat()
+        with self._write_lock():
+            self._pull()
+            path = self._resolve_shopping_list(list_id)
+            original = self._read_for_write(path)
+            title = _list_title(original) or path.stem
+            lines = original.split("\n")
+            index = self._find_shopping_item(list_id, lines, target_line)
+            dropped = lines.pop(index)
+            match = _ITEM.match(dropped)
+            body = match.group("body") if match else dropped
+            entry = f"- dropped {today}: {body} (from {title})"
+
+            path.write_text("\n".join(lines), encoding="utf-8")
+            self._append_to_completed_log([entry], today)
+            relpath = path.relative_to(self.root).as_posix()
+            self._commit_and_push(
+                [relpath, COMPLETED_LOG], f"alfred api: drop item from {relpath}"
+            )
+
+    def create_shopping_list(self, name: str) -> ShoppingListSummary:
+        """Scaffold a new active shopping list under SHOPPING_DIR.
+
+        `name` is kebab-cased into the filename; rejected if nothing
+        kebab-able survives. 409s (ShoppingListExistsError) if the file
+        already exists — never overwrites.
+        """
+        title = name.strip()
+        slug = _kebab_case(title)
+        if not slug:
+            raise ValueError("name must contain at least one letter or digit")
+        relpath = f"{SHOPPING_DIR}/{slug}.md"
+        today = date.today().isoformat()
+
+        with self._write_lock():
+            self._pull()
+            path = self.root / relpath
+            if path.exists():
+                raise ShoppingListExistsError(relpath)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                _SHOPPING_LIST_TEMPLATE.format(created=today, title=title), encoding="utf-8"
+            )
+            self._commit_and_push([relpath], f"alfred api: create shopping list '{title}'")
+        return ShoppingListSummary(id=relpath, title=title, total=0, unticked=0)
+
+    def sweep(self) -> SweepResult:
+        """Sweep ticked items from the rolling to-do and every active shopping
+        list, in one git transaction — one commit, or none if nothing was
+        ticked anywhere.
+
+        Rolling-todo sweep behaviour is unchanged: ticked lines move to
+        COMPLETED_LOG, no capture file. Shopping additionally gets ONE
+        0-inbox capture file, written only when at least one shopping item
+        was swept, naming each item's source list — this is how playbook
+        notes embedded in list files (e.g. "bought items go to the hardware
+        inventory") get actioned later by a vault session; the sweep itself
+        never interprets them.
         """
         today = date.today().isoformat()
         with self._write_lock():
             self._pull()
-            path = self.root / ROLLING_TODO
-            original = self._read_for_write(path)
 
-            kept: list[str] = []
-            swept: list[str] = []
-            for line in original.split("\n"):
+            todo_path = self.root / ROLLING_TODO
+            todo_kept: list[str] = []
+            todo_swept: list[str] = []
+            for line in self._read_for_write(todo_path).split("\n"):
                 match = _CHECKED_ITEM.match(line)
                 if match:
-                    swept.append(match.group("body"))
+                    todo_swept.append(match.group("body"))
                 else:
-                    kept.append(line)
-            if not swept:
-                return []
+                    todo_kept.append(line)
 
-            path.write_text("\n".join(kept), encoding="utf-8")
-            self._append_to_completed_log(
-                [f"- completed {today}: {body}" for body in swept], today
-            )
-            count = len(swept)
+            shopping_swept: list[dict[str, str]] = []
+            shopping_touched: list[str] = []
+            completed_entries = [f"- completed {today}: {body}" for body in todo_swept]
+            capture_lines: list[str] = []
+
+            for summary in self._scan_shopping_lists():
+                path = self.root / summary.id
+                lines = self._read_for_write(path).split("\n")
+                kept: list[str] = []
+                bodies: list[str] = []
+                for line in lines:
+                    match = _ITEM.match(line)
+                    if match and match.group("box").lower() == "x":
+                        bodies.append(match.group("body"))
+                    else:
+                        kept.append(line)
+                if not bodies:
+                    continue
+                path.write_text("\n".join(kept), encoding="utf-8")
+                shopping_touched.append(summary.id)
+                for body in bodies:
+                    shopping_swept.append({"list": summary.title, "item": body})
+                    completed_entries.append(f"- completed {today}: {body} (from {summary.title})")
+                    capture_lines.append(f"- swept from {summary.title}: {body}")
+
+            if not todo_swept and not shopping_swept:
+                return SweepResult(todo_swept=[], shopping_swept=[])
+
+            if todo_swept:
+                todo_path.write_text("\n".join(todo_kept), encoding="utf-8")
+
+            self._append_to_completed_log(completed_entries, today)
+            touched = ([ROLLING_TODO] if todo_swept else []) + shopping_touched + [COMPLETED_LOG]
+
+            if shopping_swept:
+                touched.append(self._write_inbox_capture(capture_lines))
+
+            count = len(todo_swept) + len(shopping_swept)
             self._commit_and_push(
-                [ROLLING_TODO, COMPLETED_LOG],
-                f"alfred sweep: {count} item{'s' if count != 1 else ''} to completed-log",
+                touched, f"alfred sweep: {count} item{'s' if count != 1 else ''} to completed-log"
             )
-        return swept
+        return SweepResult(todo_swept=todo_swept, shopping_swept=shopping_swept)
+
+    def _write_inbox_capture(self, lines: list[str]) -> str:
+        """Write one 0-inbox capture file for a sweep's shopping items.
+
+        No frontmatter, no headers — just bullets, so it reads as a quick
+        capture note for the next vault session to triage.
+        """
+        relpath = f"{INBOX_DIR}/{datetime.now():%Y-%m-%d-%H%M}-shopping-sweep.md"
+        path = self.root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return relpath
 
     def _append_to_completed_log(self, entries: list[str], today: str) -> None:
         """Append ledger entries, creating the log with frontmatter if absent."""
@@ -601,6 +997,24 @@ created: {created}
 Lines removed from [[rolling-todo]]. `completed` entries were ticked and then
 swept by the nightly Alfred sweep (or an on-demand "clear completed");
 `dropped` entries were deleted via the Alfred API as no longer relevant.
+
+---
+
+"""
+
+# Scaffold for CREATE LIST — matches the house style seen across
+# 6-life/shopping/*.md: frontmatter, H1, a Format line, then an empty
+# checklist section ready for _insertion_index to find on the first add.
+_SHOPPING_LIST_TEMPLATE = """\
+---
+tags: [type/list, life/shopping]
+status: active
+created: {created}
+---
+
+# {title}
+
+**Format:** `- [ ] item — notes, optional ~£cost, optional [[wikilinks]]`
 
 ---
 

@@ -18,7 +18,7 @@
 | Port | Service | Notes |
 |---|---|---|
 | 8123 | Home Assistant | Host networking (device discovery) |
-| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week` |
+| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/{list_id}` GET/POST add, `/tick`, `/drop`) |
 
 ## Deploy Model
 

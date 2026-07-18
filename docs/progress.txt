@@ -131,3 +131,71 @@ Alfred Home Hub — Progress Log
 - Deployed to the Pi (pull + compose rebuild of vault-api) and verified live
   from the laptop: /daily-schedule/week returned W29 with all six days, and
   /daily-schedule matched the week payload's entry for today exactly.
+
+2026-07-18 (later still)
+- Extended the Vault API with shopping-list support: the rolling-todo write
+  path (locked git transaction — shared flock, pull --ff-only, surgical edit,
+  commit, push, hard-reset on failure) generalised from one hardcoded file to
+  a discovered family of lists. No second write path built.
+- Discovery is by content, not location: GET /shopping returns every vault
+  .md tagged both life/shopping and status: active, wherever it lives (
+  6-life/shopping/ is just where CREATE LIST puts new ones). Per list:
+  vault-relative path as id, H1 (or filename) as title, total/unticked
+  counts. Item lines have no dates (unlike rolling-todo) and, unlike the
+  chalkboard, reads include ticked items too — they stay visible until swept.
+- New Vault methods: shopping_lists/_scan_shopping_lists (discovery),
+  shopping_list_items (one list's summary + items), add/tick/drop_shopping_
+  item, create_shopping_list, and a combined sweep() replacing sweep_ticked.
+  _resolve_shopping_list guards every list_id against path traversal and
+  against targeting a list that isn't currently tagged+active (404s with
+  current discovery, same "stale key" pattern as chalkboard's item 404s).
+- Router src/vault_api/routers/shopping.py: GET/POST /shopping (discovery,
+  create), GET/POST /shopping/{list_id} (read, add), .../tick, .../drop.
+  {list_id:path} is a greedy match, so /tick and /drop are registered before
+  the plain add route, or a POST to ".../fitness.md/tick" would be swallowed
+  by add with list_id="...fitness.md/tick" instead of reaching tick.
+- Add inserts the new checkbox line right after the list's last existing
+  item (never at the very end of a file with trailing prose/table sections
+  after the items — that fell out of "after the last item" for free); an
+  item-less freshly-scaffolded list falls back to just after its
+  "**Format:**" line, before whatever section follows.
+- CREATE LIST kebab-cases the display name into the filename under
+  6-life/shopping/ (422 on a name with nothing kebab-able, 409 if the file
+  exists already) and scaffolds vault house-style frontmatter + H1 + Format
+  line + empty checklist section — appears in discovery immediately.
+- Sweep extension: POST /chalkboard/sweep (same endpoint, same script,
+  scripts/sweep-todo.sh untouched) now sweeps every discovered shopping list
+  in the same commit as the rolling to-do. Response keeps swept/count/items
+  as rolling-todo-only for existing callers; adds shopping_swept/
+  shopping_count. Only when at least one shopping item was swept, one
+  0-inbox/YYYY-MM-DD-HHMM-shopping-sweep.md capture file is written in the
+  same commit — no frontmatter, just "swept from <list>: <item>" bullets, so
+  playbook notes embedded in list files (e.g. alfred-tech's "bought items go
+  to the hardware inventory") can be actioned later by a vault session; the
+  sweep never interprets them itself. Nothing ticked anywhere (todo or
+  shopping) stays a clean no-op, no commit — rolling-todo-only sweeps still
+  get no capture file, unchanged from before.
+- Tests: tests/test_shopping.py (44 new, all passing) — pure parsing
+  (frontmatter, item ticked/unticked, H1 title, kebab-case), insertion-point
+  logic against real alfred-tech.md content (lands after the last item,
+  never inside a middle prose section, sensible fallback for an item-less
+  list), discovery/read against tmp_path fixtures (tag+status filtering,
+  wherever-it-lives, path-traversal rejection), and the full write
+  transaction (add/tick/drop cycle byte-identical outside the touched lines,
+  stale-key 404s, create-list scaffold + immediate discovery, combined
+  sweep producing the completed-log entry + inbox capture in one commit,
+  todo-only sweep producing no capture, nothing-ticked producing no commit)
+  against a real local git origin+clone — Vault._write_lock's flock is
+  POSIX-only, so write tests bypass lock acquisition via monkeypatch while
+  exercising the real pull/edit/commit/push/hard-reset transaction. A few
+  drive the real FastAPI app via TestClient to prove the {list_id:path}
+  routing itself resolves correctly (add/tick/drop, stale-list/stale-item
+  404s, create-list 409/422) — {list_id:path} is a greedy match, so /tick
+  and /drop are registered ahead of the plain add route in shopping.py.
+- Verified read-only against the real vault clone: discovery returns exactly
+  fitness, fashion, alfred-tech (the three jess/oliver birthday event lists
+  correctly excluded as status: complete); alfred-tech's 11 items parsed
+  correctly. Write-cycle behaviour (add/tick/drop byte-diff, create-list,
+  sweep+capture) verified against a git-backed fixture seeded with the real
+  alfred-tech.md content, not run against the real vault to avoid pushing
+  test writes to the private ObsidianVault remote — NOT yet run on the Pi.
