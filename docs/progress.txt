@@ -104,3 +104,29 @@ Alfred Home Hub — Progress Log
   commit, untouched lines byte-identical, both logged as completed; immediate
   re-run was a no-op with no commit; cron entry installed and the entry-point
   script run manually (logged "OK: no-op: nothing ticked").
+
+2026-07-18 (later still)
+- GET /daily-schedule/week: the whole current plan week from the same parse as
+  /daily-schedule. Returns {week, start, end, days} with days keyed by ISO date
+  covering the plan's first day through its Saturday; sectionless/empty days
+  are present as [] (client can tell "no plan for this day" from a malformed
+  response). No plan file, or a plan with no day sections, returns the
+  well-formed no-plan shape {week, start: null, end: null, days: {}} with 200.
+- Plan-week semantics nailed down from the real vault (W28 starts "### Sun 5
+  Jul"): plan weeks run Sunday -> Saturday, named for the ISO week of their
+  Mon-Sat core. week_plan_relpath now maps a Sunday to the NEXT ISO week's
+  file — fixes a latent bug where /daily-schedule on a Sunday read the ending
+  week's plan (which never has a Sunday section) and always returned [].
+- parse_day_schedule is now the single-day slice of the shared section scan
+  (_day_section_items), so today and week payloads can never disagree.
+- Tests: 9 new in tests/test_schedule.py (20 total, all passing): full-week
+  payload, late-started plan, Sunday-started plan (real W28 shape), missing
+  plan file, plan with no day sections, today-slice == week entry, JSON shape,
+  Sunday relpath/plan-week-dates helpers.
+- Verified against the real vault clone (laptop copy of what the Pi mirrors):
+  W29 week payload has all six days Mon 13 - Sat 18 with correct periods;
+  /daily-schedule == week entry for today; Sun 5 Jul serves the W28 plan's
+  Sunday section; Sun 19 Jul (pre-review) returns the no-plan shape. Both
+  routes also smoke-tested over HTTP via TestClient (200s).
+- NOT yet run on the Pi — needs a pull + `docker compose up -d --build`, then
+  curl 192.168.1.100:8200/daily-schedule/week from the laptop.

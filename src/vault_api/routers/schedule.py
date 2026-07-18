@@ -19,3 +19,17 @@ def get_daily_schedule(vault: Vault = Depends(get_vault)) -> list[dict[str, str 
     unavailable — the alarm app should render an empty schedule, not an error.
     """
     return [item.to_json() for item in vault.daily_schedule_items()]
+
+
+@router.get("/daily-schedule/week")
+def get_week_schedule(vault: Vault = Depends(get_vault)) -> dict:
+    """The whole current plan week, keyed by ISO date.
+
+    {"week": "2026-W29", "start": ..., "end": ..., "days": {date: [items]}}
+    with every day from the plan's first day through its Saturday present —
+    empty days as [], never omitted. No plan file yet (typically Sunday before
+    the weekly review) returns start/end null and no days, with a 200. Today's
+    entry here is always identical to GET /daily-schedule: both are slices of
+    the same parse.
+    """
+    return vault.week_schedule().to_json()

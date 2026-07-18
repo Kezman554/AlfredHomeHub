@@ -9,7 +9,13 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from vault_api.vault import Vault, parse_day_schedule, week_plan_relpath
+from vault_api.vault import (
+    Vault,
+    parse_day_schedule,
+    plan_week_dates,
+    plan_week_id,
+    week_plan_relpath,
+)
 
 # A plan with inline AM:/PM: (and Evening:/Pre-breakfast:) prefixes on Tuesday,
 # an AM/PM subheading grouping on Wednesday, and plain untagged bullets on
@@ -109,6 +115,121 @@ def test_week_plan_relpath_uses_iso_week():
     assert week_plan_relpath(date(2026, 7, 15)) == "1-daily/reviews/2026-W29-plan.md"
     # ISO week is zero-padded to two digits.
     assert week_plan_relpath(date(2026, 1, 5)) == "1-daily/reviews/2026-W02-plan.md"
+
+
+def test_sunday_belongs_to_the_next_weeks_plan():
+    # Plan weeks run Sun -> Sat: Sun 12 Jul is the first possible day of the
+    # W29 plan (written that evening), not part of W28, which ended Sat 11.
+    assert week_plan_relpath(date(2026, 7, 12)) == "1-daily/reviews/2026-W29-plan.md"
+    assert plan_week_id(date(2026, 7, 12)) == "2026-W29"
+    # Saturday still belongs to its own week.
+    assert plan_week_id(date(2026, 7, 18)) == "2026-W29"
+
+
+def test_plan_week_dates_run_sunday_to_saturday():
+    dates = plan_week_dates(date(2026, 7, 15))  # Wed of W29
+    assert dates[0] == date(2026, 7, 12)  # the Sunday before ISO Monday
+    assert dates[-1] == date(2026, 7, 18)  # Saturday, never the next Sunday
+    assert len(dates) == 7
+    # Any day of the plan week, Sunday included, yields the same seven dates.
+    assert plan_week_dates(date(2026, 7, 12)) == dates
+    assert plan_week_dates(date(2026, 7, 18)) == dates
+
+
+# --- Week schedule ----------------------------------------------------------
+
+
+def write_plan(root: Path, week: str, text: str) -> None:
+    reviews = root / "1-daily" / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    (reviews / f"{week}-plan.md").write_text(text, encoding="utf-8")
+
+
+def test_week_schedule_covers_first_day_through_saturday(tmp_path):
+    # SAMPLE_PLAN has sections Mon 13 - Thu 16 only; Fri and Sat are inside the
+    # plan's range but sectionless, so they must appear explicitly empty.
+    write_plan(tmp_path, "2026-W29", SAMPLE_PLAN)
+    week = Vault(root=tmp_path).week_schedule(today=date(2026, 7, 15))
+
+    assert week.week == "2026-W29"
+    assert week.start == "2026-07-13"
+    assert week.end == "2026-07-18"
+    assert list(week.days) == [
+        "2026-07-13",
+        "2026-07-14",
+        "2026-07-15",
+        "2026-07-16",
+        "2026-07-17",
+        "2026-07-18",
+    ]
+    assert tasks_of(week.days["2026-07-16"]) == ["water the plants", "call mum"]
+    assert week.days["2026-07-17"] == []
+    assert week.days["2026-07-18"] == []
+
+
+def test_week_schedule_late_started_plan_omits_days_before_the_start(tmp_path):
+    late_plan = "# 2026-W29 Plan\n\n### Thu 16 Jul\n- back from trip\n\n### Sat 18 Jul\n- family day\n"
+    write_plan(tmp_path, "2026-W29", late_plan)
+    week = Vault(root=tmp_path).week_schedule(today=date(2026, 7, 16))
+
+    assert week.start == "2026-07-16"
+    assert week.end == "2026-07-18"
+    # Days before the plan started are not part of its range at all; Friday is
+    # inside the range but has no section, so it is present and empty.
+    assert list(week.days) == ["2026-07-16", "2026-07-17", "2026-07-18"]
+    assert week.days["2026-07-17"] == []
+
+
+def test_week_schedule_sunday_started_plan_includes_sunday(tmp_path):
+    # W28's real plan starts "### Sun 5 Jul" — the Sunday before ISO Monday.
+    sunday_plan = "# 2026-W28 Plan\n\n### Sun 5 Jul\n- weigh-in\n\n### Mon 6 Jul\n- soul files\n"
+    write_plan(tmp_path, "2026-W28", sunday_plan)
+    vault = Vault(root=tmp_path)
+
+    # Queried on that Sunday itself: the plan week is W28, starting today.
+    week = vault.week_schedule(today=date(2026, 7, 5))
+    assert week.week == "2026-W28"
+    assert week.start == "2026-07-05"
+    assert week.end == "2026-07-11"
+    assert tasks_of(week.days["2026-07-05"]) == ["weigh-in"]
+    assert len(week.days) == 7
+
+    # And /daily-schedule on that Sunday serves the same slice.
+    items = vault.daily_schedule_items(today=date(2026, 7, 5))
+    assert tasks_of(items) == ["weigh-in"]
+
+
+def test_week_schedule_no_plan_file_is_well_formed(tmp_path):
+    week = Vault(root=tmp_path).week_schedule(today=date(2026, 7, 15))
+    assert week.week == "2026-W29"
+    assert week.start is None
+    assert week.end is None
+    assert week.days == {}
+    assert week.to_json() == {"week": "2026-W29", "start": None, "end": None, "days": {}}
+
+
+def test_week_schedule_plan_with_no_day_sections_is_no_plan(tmp_path):
+    write_plan(tmp_path, "2026-W29", "# 2026-W29 Plan\n\n## Focus This Week\n- big rocks\n")
+    week = Vault(root=tmp_path).week_schedule(today=date(2026, 7, 15))
+    assert (week.start, week.end, week.days) == (None, None, {})
+
+
+def test_daily_schedule_matches_the_week_payloads_entry_for_today(tmp_path):
+    write_plan(tmp_path, "2026-W29", SAMPLE_PLAN)
+    vault = Vault(root=tmp_path)
+    for day in (date(2026, 7, 13), date(2026, 7, 14), date(2026, 7, 17)):
+        week_entry = vault.week_schedule(today=day).days.get(day.isoformat(), [])
+        assert vault.daily_schedule_items(today=day) == week_entry
+
+
+def test_week_schedule_to_json_items_have_task_and_period(tmp_path):
+    write_plan(tmp_path, "2026-W29", SAMPLE_PLAN)
+    blob = Vault(root=tmp_path).week_schedule(today=date(2026, 7, 14)).to_json()
+    assert set(blob) == {"week", "start", "end", "days"}
+    for items in blob["days"].values():
+        for item in items:
+            assert set(item) == {"task", "period"}
+            assert item["period"] in ("am", "pm", None)
 
 
 # --- Vault-level tests: reading real files off disk ------------------------

@@ -14,7 +14,7 @@ import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from .config import GIT_TIMEOUT, GIT_USER_EMAIL, GIT_USER_NAME, WRITE_LOCK_TIMEOUT
@@ -117,6 +117,30 @@ class ScheduleItem:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class WeekSchedule:
+    """The whole current plan week, keyed by ISO date.
+
+    `days` covers every date from the plan's first day through its Saturday,
+    each present even when empty, so a client can tell "no plan for this day"
+    from a malformed response. A missing plan file (typically Sunday before the
+    weekly review) is start/end None with no days — well-formed, not an error.
+    """
+
+    week: str
+    start: str | None  # ISO date of the plan's first day, or None: no plan yet
+    end: str | None  # ISO date of the plan's Saturday, or None: no plan yet
+    days: dict[str, list[ScheduleItem]]
+
+    def to_json(self) -> dict:
+        return {
+            "week": self.week,
+            "start": self.start,
+            "end": self.end,
+            "days": {day: [item.to_json() for item in items] for day, items in self.days.items()},
+        }
+
+
 # Bullet item within a day section: "- text" or "* text", allowing nesting.
 _BULLET = re.compile(r"^\s*[-*]\s+(?P<body>.+?)\s*$")
 
@@ -169,9 +193,28 @@ def parse_day_schedule(text: str, today: date) -> list[ScheduleItem]:
     if present, else from an AM/PM subheading it falls under, else None. Returns
     [] when today has no section in the file.
     """
-    lines = text.splitlines()
+    return _day_section_items(text.splitlines(), today) or []
 
-    # Locate today's day heading and the level it sits at.
+
+def parse_week_schedule(text: str, days: list[date]) -> dict[date, list[ScheduleItem] | None]:
+    """Items for each of `days`, or None for a day with no section at all.
+
+    None vs [] is the distinction the week endpoint needs: a day the plan never
+    covered (started late) versus a day whose section simply has no bullets.
+    The today endpoint is `parse_day_schedule`, a single-day slice of this same
+    scan, so the two can never disagree.
+    """
+    lines = text.splitlines()
+    return {day: _day_section_items(lines, day) for day in days}
+
+
+def _day_section_items(lines: list[str], day: date) -> list[ScheduleItem] | None:
+    """Bullet items of `day`'s section, or None when the file has no such heading.
+
+    Headings carry day + month only ("### Tue 14 Jul") — the year is implied by
+    which week's file this is, so matching is on (day, month).
+    """
+    # Locate the day heading and the level it sits at.
     start = None
     day_level = 0
     for i, line in enumerate(lines):
@@ -179,12 +222,12 @@ def parse_day_schedule(text: str, today: date) -> list[ScheduleItem]:
         if not heading:
             continue
         parsed = _heading_date(heading.group("text"))
-        if parsed == (today.day, today.month):
+        if parsed == (day.day, day.month):
             start = i + 1
             day_level = len(heading.group("hashes"))
             break
     if start is None:
-        return []
+        return None
 
     items: list[ScheduleItem] = []
     subheading_period: str | None = None
@@ -215,15 +258,38 @@ def parse_day_schedule(text: str, today: date) -> list[ScheduleItem]:
     return items
 
 
+def _plan_week_monday(today: date) -> date:
+    """Monday of the plan week containing `today`.
+
+    Plan weeks run Sunday -> Saturday but are named for the ISO week of their
+    Mon-Sat core: a Sunday belongs to the *next* ISO week's plan (the one
+    written at that evening's weekly review), never the week it closes — plans
+    end on Saturday.
+    """
+    ref = today + timedelta(days=1) if today.weekday() == 6 else today
+    return ref - timedelta(days=ref.weekday())
+
+
+def plan_week_id(today: date) -> str:
+    """The plan week's id in the vault's naming, e.g. "2026-W29"."""
+    iso_year, iso_week, _ = _plan_week_monday(today).isocalendar()
+    return f"{iso_year:04d}-W{iso_week:02d}"
+
+
+def plan_week_dates(today: date) -> list[date]:
+    """The seven dates a plan for `today`'s week could cover, Sunday -> Saturday."""
+    monday = _plan_week_monday(today)
+    return [monday + timedelta(days=offset) for offset in range(-1, 6)]
+
+
 def week_plan_relpath(today: date) -> str:
-    """Relative vault path of the plan file for the ISO week containing `today`.
+    """Relative vault path of the plan file for the plan week containing `today`.
 
     Uses the ISO calendar so the week number (and its year, near a year
     boundary) matches the vault's YYYY-Wnn naming, e.g. 1-daily/reviews/
     2026-W29-plan.md.
     """
-    iso_year, iso_week, _ = today.isocalendar()
-    return f"{PLAN_DIR}/{iso_year:04d}-W{iso_week:02d}-plan.md"
+    return f"{PLAN_DIR}/{plan_week_id(today)}-plan.md"
 
 
 class VaultWriteError(Exception):
@@ -295,6 +361,35 @@ class Vault:
         if text is None:
             return []
         return parse_day_schedule(text, today)
+
+    def week_schedule(self, today: date | None = None) -> WeekSchedule:
+        """The whole current plan week: every day from its first day to Saturday.
+
+        Days the plan covers but left without a section (or without bullets)
+        appear as empty lists. No plan file, or a file with no day sections at
+        all, is the "no plan this week" shape: start/end None, no days.
+        """
+        today = today or date.today()
+        week = plan_week_id(today)
+        candidates = plan_week_dates(today)
+        text = self._read_text(week_plan_relpath(today))
+        if text is None:
+            return WeekSchedule(week=week, start=None, end=None, days={})
+
+        sections = parse_week_schedule(text, candidates)
+        covered = [day for day in candidates if sections[day] is not None]
+        if not covered:
+            return WeekSchedule(week=week, start=None, end=None, days={})
+
+        first, saturday = covered[0], candidates[-1]
+        days = {
+            day.isoformat(): sections[day] or []
+            for day in candidates
+            if first <= day <= saturday
+        }
+        return WeekSchedule(
+            week=week, start=first.isoformat(), end=saturday.isoformat(), days=days
+        )
 
     # --- Writes ---------------------------------------------------------------
     #
