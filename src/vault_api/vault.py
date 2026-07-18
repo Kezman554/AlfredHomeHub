@@ -50,6 +50,9 @@ _MONTH_ABBR = (
 # Checked items ("- [x]") deliberately do not match.
 _UNCHECKED_ITEM = re.compile(r"^\s*[-*]\s+\[ \]\s+(?P<body>.+?)\s*$")
 
+# A checked (ticked) task: what the overnight sweep removes.
+_CHECKED_ITEM = re.compile(r"^\s*[-*]\s+\[[xX]\]\s+(?P<body>.+?)\s*$")
+
 # A trailing capture date in parentheses. Only stripped when it ends the line.
 _TRAILING_DATE = re.compile(r"^(?P<task>.*?)\s*\((?P<date>\d{4}-\d{2}-\d{2})\)$")
 
@@ -345,22 +348,60 @@ class Vault:
             lines = original.split("\n")
             index = self._find_item(lines, target_line)
             dropped = lines.pop(index)
-
-            log_path = self.root / COMPLETED_LOG
-            if log_path.exists():
-                log_text = self._read_for_write(log_path)
-                if not log_text.endswith("\n"):
-                    log_text += "\n"
-            else:
-                log_text = _COMPLETED_LOG_TEMPLATE.format(created=today)
             body = _UNCHECKED_ITEM.match(dropped)
             entry = f"- dropped {today}: {body.group('body') if body else dropped}"
 
             path.write_text("\n".join(lines), encoding="utf-8")
-            log_path.write_text(log_text + entry + "\n", encoding="utf-8")
+            self._append_to_completed_log([entry], today)
             self._commit_and_push(
                 [ROLLING_TODO, COMPLETED_LOG], f"alfred api: drop '{_task_of(target_line)}'"
             )
+
+    def sweep_ticked(self) -> list[str]:
+        """Remove every '- [x]' line, logging each as completed. Returns them.
+
+        The undo window is tick -> sweep: a ticked line stays in the doc until
+        this runs (nightly cron, or the on-demand endpoint — same code path).
+        Nothing ticked means no commit at all: a clean no-op.
+        """
+        today = date.today().isoformat()
+        with self._write_lock():
+            self._pull()
+            path = self.root / ROLLING_TODO
+            original = self._read_for_write(path)
+
+            kept: list[str] = []
+            swept: list[str] = []
+            for line in original.split("\n"):
+                match = _CHECKED_ITEM.match(line)
+                if match:
+                    swept.append(match.group("body"))
+                else:
+                    kept.append(line)
+            if not swept:
+                return []
+
+            path.write_text("\n".join(kept), encoding="utf-8")
+            self._append_to_completed_log(
+                [f"- completed {today}: {body}" for body in swept], today
+            )
+            count = len(swept)
+            self._commit_and_push(
+                [ROLLING_TODO, COMPLETED_LOG],
+                f"alfred sweep: {count} item{'s' if count != 1 else ''} to completed-log",
+            )
+        return swept
+
+    def _append_to_completed_log(self, entries: list[str], today: str) -> None:
+        """Append ledger entries, creating the log with frontmatter if absent."""
+        log_path = self.root / COMPLETED_LOG
+        if log_path.exists():
+            log_text = self._read_for_write(log_path)
+            if not log_text.endswith("\n"):
+                log_text += "\n"
+        else:
+            log_text = _COMPLETED_LOG_TEMPLATE.format(created=today)
+        log_path.write_text(log_text + "\n".join(entries) + "\n", encoding="utf-8")
 
     def _find_item(self, lines: list[str], target_line: str) -> int:
         """Index of the exact target line, which must be an unchecked item.
@@ -462,9 +503,9 @@ created: {created}
 
 # Completed Log
 
-Lines removed from [[rolling-todo]]. `dropped` entries were deleted as no
-longer relevant via the Alfred API; swept (completed) entries land here too
-once the overnight sweep job exists.
+Lines removed from [[rolling-todo]]. `completed` entries were ticked and then
+swept by the nightly Alfred sweep (or an on-demand "clear completed");
+`dropped` entries were deleted via the Alfred API as no longer relevant.
 
 ---
 

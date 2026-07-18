@@ -91,3 +91,15 @@ def drop_item(body: TargetRequest, vault: Vault = Depends(get_vault)) -> dict:
     except ItemNotFoundError as exc:
         raise _stale_list_404(exc) from exc
     return {"dropped": body.line, "items": _items(vault)}
+
+
+@router.post("/chalkboard/sweep")
+def sweep_ticked(vault: Vault = Depends(get_vault)) -> dict:
+    """Clear completed: remove every ticked line, logging each as COMPLETED.
+
+    The same code path the nightly cron triggers (scripts/sweep-todo.sh curls
+    this endpoint); this backs a future UI "clear completed" button. Nothing
+    ticked is a clean no-op — no commit is made.
+    """
+    swept = vault.sweep_ticked()
+    return {"swept": swept, "count": len(swept), "items": _items(vault)}

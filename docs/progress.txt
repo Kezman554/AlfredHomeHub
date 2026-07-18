@@ -86,3 +86,21 @@ Alfred Home Hub — Progress Log
   byte-identical after cleanup); /chalkboard reflected changes immediately;
   a write issued while the lock was held externally for 12s waited and then
   proceeded; test residue removed with a final manual commit.
+
+2026-07-18 (later)
+- Housekeeping sweep for the rolling to-do: Vault.sweep_ticked() removes every
+  "- [x]" line and appends each to 6-life/completed-log.md as
+  "- completed <sweep-date>: <original text + added-date>" — distinct from the
+  "dropped" marker, so the log reads as a done-ledger with drops visible.
+  One sweep = one commit ("alfred sweep: N items to completed-log") + push,
+  inside the same shared-lock/pull/edit/commit/push machinery as T3 writes.
+  Zero ticked lines = clean no-op, no commit.
+- Two triggers, one code path: POST /chalkboard/sweep (backs a future UI
+  "clear completed" button; returns swept items + fresh list), and
+  scripts/sweep-todo.sh which curls that endpoint and logs the outcome to
+  ~/logs/todo-sweep.log. scripts/setup-todo-sweep.sh installs it as a nightly
+  03:07 cron (off the */10 vault-sync boundary) idempotently and fires it once.
+- Verified live on the Pi: two ticked test items swept in one clean pushed
+  commit, untouched lines byte-identical, both logged as completed; immediate
+  re-run was a no-op with no commit; cron entry installed and the entry-point
+  script run manually (logged "OK: no-op: nothing ticked").
