@@ -128,5 +128,6 @@ Alfred Home Hub — Progress Log
   /daily-schedule == week entry for today; Sun 5 Jul serves the W28 plan's
   Sunday section; Sun 19 Jul (pre-review) returns the no-plan shape. Both
   routes also smoke-tested over HTTP via TestClient (200s).
-- NOT yet run on the Pi — needs a pull + `docker compose up -d --build`, then
-  curl 192.168.1.100:8200/daily-schedule/week from the laptop.
+- Deployed to the Pi (pull + compose rebuild of vault-api) and verified live
+  from the laptop: /daily-schedule/week returned W29 with all six days, and
+  /daily-schedule matched the week payload's entry for today exactly.
