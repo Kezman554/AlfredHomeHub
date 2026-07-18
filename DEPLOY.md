@@ -18,7 +18,7 @@
 | Port | Service | Notes |
 |---|---|---|
 | 8123 | Home Assistant | Host networking (device discovery) |
-| 8200 | Vault API | Read-only vault content for the MorningSync alarm app. `http://192.168.1.100:8200` — `/health`, `/chalkboard` |
+| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`), `/daily-schedule` |
 
 ## Deploy Model
 

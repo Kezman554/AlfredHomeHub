@@ -3,7 +3,7 @@
 #
 # Ports on the Pi:
 #   8123 — Home Assistant
-#   8200 — Vault API (read-only vault content for the MorningSync alarm app)
+#   8200 — Vault API (vault content + rolling to-do writes for LAN clients)
 
 services:
   homeassistant:
@@ -34,12 +34,19 @@ services:
     environment:
       # Path *inside* the container — matches the mount below.
       VAULT_PATH: /vault
+      # Non-interactive SSH for git push/pull from inside the container.
+      # accept-new tolerates a missing github.com entry in known_hosts without
+      # ever accepting a *changed* host key.
+      GIT_SSH_COMMAND: ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
 
     volumes:
       # The vault clone on the Pi, kept current by the vault-sync cron.
-      # Read-only: this API never writes. When write-back lands (append/tick
-      # off a to-do), drop the :ro and revisit.
-      - ${VAULT_HOST_PATH:-/home/kezman554/alfred-vault}:/vault:ro
+      # Read-write: the chalkboard write endpoints edit, commit, and push.
+      - ${VAULT_HOST_PATH:-/home/kezman554/alfred-vault}:/vault
+      # The Pi user's SSH dir, for the vault deploy key (which has write
+      # access) and known_hosts. Read-only; the container UID (1000) matches
+      # kezman554 so the key's 600 perms still allow reading.
+      - /home/kezman554/.ssh:/home/vaultapi/.ssh:ro
       - /etc/localtime:/etc/localtime:ro
 
     # Published on all interfaces so LAN devices (the alarm app) can reach it.

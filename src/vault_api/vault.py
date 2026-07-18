@@ -1,24 +1,38 @@
 """Vault access layer.
 
 All filesystem access to the Obsidian vault goes through here, so routers never
-touch paths directly. The vault is currently mounted read-only; write-back
-(appending a to-do, ticking one off) belongs on this class as write_* methods
-and does not require the read paths to change.
+touch paths directly. Reads are plain file reads; writes are full git
+transactions (lock -> pull -> surgical edit -> commit -> push) so the vault on
+origin is always the source of truth and the Pi's clone never diverges.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import subprocess
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
+
+from .config import GIT_TIMEOUT, GIT_USER_EMAIL, GIT_USER_NAME, WRITE_LOCK_TIMEOUT
 
 log = logging.getLogger(__name__)
 
 # Relative to the vault root. Kept here rather than inline in a router so other
 # note types (daily schedule, family calendar) can be added alongside it.
 ROLLING_TODO = "6-life/rolling-todo.md"
+
+# Where dropped (and, later, swept) items are preserved. Nothing is ever
+# silently destroyed: a deleted to-do line is appended here before it goes.
+COMPLETED_LOG = "6-life/completed-log.md"
+
+# Lock file shared with scripts/vault-sync.sh so a write and the 10-minute sync
+# cron serialise instead of racing. Lives under .git/ so it is inside the
+# bind-mounted vault but never part of the working tree.
+WRITE_LOCK = ".git/alfred-write.lock"
 
 # Weekly plan files, one per ISO week: 1-daily/reviews/YYYY-Wnn-plan.md.
 PLAN_DIR = "1-daily/reviews"
@@ -42,9 +56,15 @@ _TRAILING_DATE = re.compile(r"^(?P<task>.*?)\s*\((?P<date>\d{4}-\d{2}-\d{2})\)$"
 
 @dataclass(frozen=True)
 class TodoItem:
-    """One unchecked item from the rolling to-do."""
+    """One unchecked item from the rolling to-do.
+
+    `line` is the raw markdown line, byte-for-byte. Dates are not unique across
+    items, so it doubles as the item's key: write clients echo it back to
+    target a tick or a drop.
+    """
 
     task: str
+    line: str
     date: str | None = None
 
     def to_json(self) -> dict[str, str]:
@@ -64,11 +84,21 @@ def parse_unchecked_items(text: str) -> list[TodoItem]:
         body = match.group("body")
         dated = _TRAILING_DATE.match(body)
         if dated and dated.group("task"):
-            items.append(TodoItem(task=dated.group("task"), date=dated.group("date")))
+            items.append(TodoItem(task=dated.group("task"), line=line, date=dated.group("date")))
         else:
             # No trailing date, or the line is nothing but a date.
-            items.append(TodoItem(task=body))
+            items.append(TodoItem(task=body, line=line))
     return items
+
+
+def _task_of(line: str) -> str:
+    """The task text of a raw item line, for commit messages and responses."""
+    match = _UNCHECKED_ITEM.match(line)
+    body = match.group("body") if match else line
+    dated = _TRAILING_DATE.match(body)
+    if dated and dated.group("task"):
+        return dated.group("task")
+    return body
 
 
 @dataclass(frozen=True)
@@ -193,6 +223,34 @@ def week_plan_relpath(today: date) -> str:
     return f"{PLAN_DIR}/{iso_year:04d}-W{iso_week:02d}-plan.md"
 
 
+class VaultWriteError(Exception):
+    """Base for write failures. The working tree is clean when this is raised."""
+
+
+class VaultBusyError(VaultWriteError):
+    """The write lock could not be acquired in time (sync cron holding it)."""
+
+
+class VaultSyncError(VaultWriteError):
+    """git pull or push failed; the local vault was restored to match origin."""
+
+
+class ItemNotFoundError(Exception):
+    """The targeted line is not (or no longer) in the rolling to-do.
+
+    Carries the current items so the API can hand the client a fresh list to
+    retarget from — the usual cause is a stale list on the client.
+    """
+
+    def __init__(self, items: list[TodoItem]) -> None:
+        super().__init__("item not found in rolling to-do")
+        self.items = items
+
+
+class _GitError(Exception):
+    """Internal: a git command failed. Translated to VaultSyncError by callers."""
+
+
 class Vault:
     """Read access to the vault on disk.
 
@@ -234,3 +292,180 @@ class Vault:
         if text is None:
             return []
         return parse_day_schedule(text, today)
+
+    # --- Writes ---------------------------------------------------------------
+    #
+    # Every write is one git transaction: take the shared lock, pull --ff-only,
+    # edit only the lines involved, commit, push. If commit or push fails the
+    # clone is hard-reset to origin, so a failed write never leaves the tree
+    # dirty — the write simply didn't happen and the client is told so.
+
+    def add_item(self, text: str) -> TodoItem:
+        """Append '- [ ] text (today)' to the rolling to-do. Returns the item."""
+        task = text.strip()
+        if not task or "\n" in text or "\r" in text:
+            raise ValueError("task text must be a non-empty single line")
+        today = date.today().isoformat()
+        line = f"- [ ] {task} ({today})"
+
+        with self._write_lock():
+            self._pull()
+            path = self.root / ROLLING_TODO
+            original = self._read_for_write(path)
+            # Appending must not disturb existing bytes; only supply the final
+            # newline if the file happens to lack one.
+            prefix = original if original.endswith("\n") else original + "\n"
+            path.write_text(prefix + line + "\n", encoding="utf-8")
+            self._commit_and_push([ROLLING_TODO], f"alfred api: add '{task}'")
+        return TodoItem(task=task, line=line, date=today)
+
+    def tick_item(self, target_line: str) -> None:
+        """Flip the targeted item's '- [ ]' to '- [x]', leaving the line in place."""
+        with self._write_lock():
+            self._pull()
+            path = self.root / ROLLING_TODO
+            original = self._read_for_write(path)
+            lines = original.split("\n")
+            index = self._find_item(lines, target_line)
+            lines[index] = lines[index].replace("[ ]", "[x]", 1)
+            path.write_text("\n".join(lines), encoding="utf-8")
+            self._commit_and_push([ROLLING_TODO], f"alfred api: tick '{_task_of(target_line)}'")
+
+    def drop_item(self, target_line: str) -> None:
+        """Remove the targeted line and log it in the completed log as DROPPED.
+
+        Distinct from ticking: this is for items no longer relevant, not done.
+        The line is preserved in COMPLETED_LOG — nothing is silently destroyed.
+        """
+        today = date.today().isoformat()
+        with self._write_lock():
+            self._pull()
+            path = self.root / ROLLING_TODO
+            original = self._read_for_write(path)
+            lines = original.split("\n")
+            index = self._find_item(lines, target_line)
+            dropped = lines.pop(index)
+
+            log_path = self.root / COMPLETED_LOG
+            if log_path.exists():
+                log_text = self._read_for_write(log_path)
+                if not log_text.endswith("\n"):
+                    log_text += "\n"
+            else:
+                log_text = _COMPLETED_LOG_TEMPLATE.format(created=today)
+            body = _UNCHECKED_ITEM.match(dropped)
+            entry = f"- dropped {today}: {body.group('body') if body else dropped}"
+
+            path.write_text("\n".join(lines), encoding="utf-8")
+            log_path.write_text(log_text + entry + "\n", encoding="utf-8")
+            self._commit_and_push(
+                [ROLLING_TODO, COMPLETED_LOG], f"alfred api: drop '{_task_of(target_line)}'"
+            )
+
+    def _find_item(self, lines: list[str], target_line: str) -> int:
+        """Index of the exact target line, which must be an unchecked item.
+
+        Requiring the item shape means the API can only ever touch to-do lines,
+        never frontmatter, headings, or prose, whatever a client sends.
+        """
+        if _UNCHECKED_ITEM.match(target_line):
+            try:
+                return lines.index(target_line)
+            except ValueError:
+                pass
+        raise ItemNotFoundError(items=parse_unchecked_items("\n".join(lines)))
+
+    def _read_for_write(self, path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise VaultWriteError(f"cannot read {path.name}: {exc}") from exc
+
+    @contextmanager
+    def _write_lock(self):
+        """Hold the flock shared with vault-sync.sh, or raise VaultBusyError.
+
+        fcntl is imported here, not at module top, so the read-only paths still
+        import on non-POSIX dev machines.
+        """
+        import fcntl
+
+        deadline = time.monotonic() + WRITE_LOCK_TIMEOUT
+        with open(self.root / WRITE_LOCK, "w") as lock_file:
+            while True:
+                try:
+                    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise VaultBusyError(
+                            "vault is locked (sync in progress) — try again shortly"
+                        ) from None
+                    time.sleep(0.5)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    def _pull(self) -> None:
+        # --ff-only matches vault-sync.sh: the Pi is a mirror of origin and a
+        # write pushes immediately, so fast-forward always suffices. A failure
+        # here leaves the tree untouched (no merge state to unwind).
+        try:
+            self._git("pull", "--ff-only")
+        except _GitError as exc:
+            raise VaultSyncError(f"could not pull vault before writing: {exc}") from exc
+
+    def _commit_and_push(self, relpaths: list[str], message: str) -> None:
+        try:
+            self._git("add", "--", *relpaths)
+            self._git(
+                "-c", f"user.name={GIT_USER_NAME}",
+                "-c", f"user.email={GIT_USER_EMAIL}",
+                "commit", "-m", message,
+            )
+            self._git("push")
+        except _GitError as exc:
+            # Whatever failed, put the clone back on origin so the tree is
+            # clean and the next sync fast-forwards. The write is reported as
+            # failed; nothing is half-applied.
+            try:
+                self._git("reset", "--hard", "@{upstream}")
+            except _GitError as reset_exc:
+                log.error("could not restore vault after failed write: %s", reset_exc)
+            raise VaultSyncError(f"could not push write to origin: {exc}") from exc
+
+    def _git(self, *args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True,
+                text=True,
+                timeout=GIT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise _GitError(f"git {args[0]} timed out after {GIT_TIMEOUT}s") from exc
+        if result.returncode != 0:
+            detail = (result.stderr.strip() or result.stdout.strip()).replace("\n", " | ")
+            raise _GitError(f"git {args[0]} failed: {detail}")
+        return result.stdout
+
+
+# Created on first drop if the log doesn't exist yet; frontmatter follows the
+# vault's house style (see rolling-todo.md).
+_COMPLETED_LOG_TEMPLATE = """\
+---
+tags: [type/log, life/admin]
+status: active
+created: {created}
+---
+
+# Completed Log
+
+Lines removed from [[rolling-todo]]. `dropped` entries were deleted as no
+longer relevant via the Alfred API; swept (completed) entries land here too
+once the overnight sweep job exists.
+
+---
+
+"""

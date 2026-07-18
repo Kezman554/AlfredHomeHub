@@ -26,6 +26,16 @@ fail() {
 # --- Preconditions ------------------------------------------------------------
 [ -d "${VAULT_PATH}/.git" ] || fail "no git repo at ${VAULT_PATH} — run setup-vault-sync.sh first"
 
+# --- Lock ---------------------------------------------------------------------
+# Shared with the vault API's write path (WRITE_LOCK in src/vault_api/vault.py):
+# a write transaction (pull-edit-commit-push) and this sync must serialise, or
+# the pull can land mid-edit. Under .git/ so it never appears in the work tree.
+# The lock is held for the rest of the script and released on exit.
+LOCK_FILE="${VAULT_PATH}/.git/alfred-write.lock"
+LOCK_TIMEOUT="${LOCK_TIMEOUT:-120}"
+exec 9>"${LOCK_FILE}"
+flock -w "${LOCK_TIMEOUT}" 9 || fail "could not acquire write lock within ${LOCK_TIMEOUT}s"
+
 # --- Pull ---------------------------------------------------------------------
 # --ff-only is deliberate. This sync is the PULL half of a bidirectional model:
 # Pi-Alfred also WRITES to the vault (card T). The design contract is that Alfred

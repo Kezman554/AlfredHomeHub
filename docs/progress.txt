@@ -63,3 +63,26 @@ Alfred Home Hub — Progress Log
   smoke-tested the live endpoint via TestClient against a fixture plan.
 - NOT yet run on the Pi — needs a pull + `docker compose up -d --build`, then
   curl 192.168.1.100:8200/daily-schedule from the laptop.
+
+2026-07-18
+- Vault API write endpoints for the rolling to-do (the API's first writes):
+  POST /chalkboard (add, dated today), /chalkboard/tick, /chalkboard/drop
+  (drop removes the line and logs it as "dropped" in 6-life/completed-log.md,
+  created with vault-style frontmatter on first use — nothing silently lost).
+- Item key is the raw markdown line: GET /chalkboard now returns `line`
+  alongside task/date (dates aren't unique), and tick/drop take it back.
+  Targeting misses return 404 carrying the current list so clients refresh.
+- Write discipline in Vault: flock -> pull --ff-only -> surgical edit ->
+  commit -> push. On commit/push failure the clone hard-resets to origin, so
+  the tree is never left dirty. Lock file .git/alfred-write.lock is shared
+  with vault-sync.sh (now flock-wrapped) so writes and the 10-min sync cron
+  serialise. Commits authored as Alfred <alfred@alfred.local>.
+- Infra: Dockerfile installs git+openssh-client and runs as UID 1000 (matches
+  kezman554) so the rw vault mount and the read-only ~/.ssh mount (deploy key,
+  ~-relative IdentityFile) just work; compose drops :ro and sets
+  GIT_SSH_COMMAND (BatchMode, accept-new).
+- Verified live on the Pi against the real vault: add/tick/drop each landed as
+  a clean pushed commit touching only the intended lines (diff vs baseline
+  byte-identical after cleanup); /chalkboard reflected changes immediately;
+  a write issued while the lock was held externally for 12s waited and then
+  proceeded; test residue removed with a final manual commit.
