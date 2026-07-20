@@ -253,6 +253,41 @@ def _kebab_case(name: str) -> str:
     return _KEBAB_INVALID.sub("-", name.strip().lower()).strip("-")
 
 
+# --- Inbox ------------------------------------------------------------------
+#
+# Plain capture: text in, one file out. No frontmatter, no headers, no tag
+# parsing or routing — inbox notes are ephemeral and get triaged by hand in a
+# vault session, so the API only ever creates and lists them.
+
+# How many words of the captured text feed the filename slug, and the cap on
+# the resulting slug. Enough to recognise a note in a file listing; short
+# enough that a pasted paragraph doesn't become an unusable filename.
+INBOX_SLUG_WORDS = 6
+INBOX_SLUG_MAX = 48
+
+# Used when the text has nothing kebab-able in its opening words (e.g. pure
+# punctuation or non-Latin script) — the timestamp still makes it unique.
+INBOX_SLUG_FALLBACK = "note"
+
+
+@dataclass(frozen=True)
+class InboxNote:
+    """One file in 0-inbox/: its filename and full raw content."""
+
+    filename: str
+    content: str
+
+    def to_json(self) -> dict[str, str]:
+        return asdict(self)
+
+
+def _inbox_slug(text: str) -> str:
+    """Kebab-case slug from the first few words of a capture."""
+    words = text.split()[:INBOX_SLUG_WORDS]
+    slug = _kebab_case(" ".join(words))[:INBOX_SLUG_MAX].strip("-")
+    return slug or INBOX_SLUG_FALLBACK
+
+
 @dataclass(frozen=True)
 class ScheduleItem:
     """One planned item from today's section of the weekly plan."""
@@ -657,6 +692,30 @@ class Vault:
                 pass
         raise ShoppingItemNotFoundError(list_id, parse_shopping_items("\n".join(lines)))
 
+    # --- Inbox: reads -----------------------------------------------------------
+
+    def inbox_notes(self) -> list[InboxNote]:
+        """Every .md in 0-inbox/, newest first, with full content.
+
+        Sorted by filename descending, not mtime: filenames lead with
+        YYYY-MM-DD-HHMM, and a fresh clone on the Pi gives every file the same
+        checkout mtime, so the name is the only capture time that survives git.
+        Unreadable files are skipped (logged), never fatal to the listing.
+        """
+        directory = self.root / INBOX_DIR
+        try:
+            paths = sorted(directory.glob("*.md"), key=lambda p: p.name, reverse=True)
+        except OSError as exc:
+            log.warning("inbox unreadable: %s (%s)", directory, exc)
+            return []
+
+        notes: list[InboxNote] = []
+        for path in paths:
+            text = self._read_text_at(path)
+            if text is not None:
+                notes.append(InboxNote(filename=path.name, content=text))
+        return notes
+
     # --- Writes ---------------------------------------------------------------
     #
     # Every write is one git transaction: take the shared lock, pull --ff-only,
@@ -801,6 +860,28 @@ class Vault:
             self._commit_and_push([relpath], f"alfred api: create shopping list '{title}'")
         return ShoppingListSummary(id=relpath, title=title, total=0, unticked=0)
 
+    def capture_to_inbox(self, text: str) -> InboxNote:
+        """Write one 0-inbox capture file holding `text` verbatim.
+
+        Content is the raw text and nothing else — no frontmatter, no headers
+        — matching the vault's inbox convention (a few plain bullets or plain
+        prose, triaged and deleted by hand later). Multi-line text is fine
+        here, unlike the single-line to-do writes.
+        """
+        # Normalise line endings so a capture posted from any client lands as
+        # LF, matching every other file the API writes.
+        body = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not body:
+            raise ValueError("capture text must not be empty")
+        slug = _inbox_slug(body)
+
+        with self._write_lock():
+            self._pull()
+            relpath = self._write_inbox_capture(body.split("\n"), slug)
+            self._commit_and_push([relpath], f"alfred api: inbox capture '{slug}'")
+
+        return InboxNote(filename=relpath.split("/")[-1], content=body + "\n")
+
     def sweep(self) -> SweepResult:
         """Sweep ticked items from the rolling to-do and every active shopping
         list, in one git transaction — one commit, or none if nothing was
@@ -871,17 +952,26 @@ class Vault:
             )
         return SweepResult(todo_swept=todo_swept, shopping_swept=shopping_swept)
 
-    def _write_inbox_capture(self, lines: list[str]) -> str:
-        """Write one 0-inbox capture file for a sweep's shopping items.
+    def _write_inbox_capture(self, lines: list[str], slug: str = "shopping-sweep") -> str:
+        """Write one 0-inbox capture file, named YYYY-MM-DD-HHMM-<slug>.md.
 
-        No frontmatter, no headers — just bullets, so it reads as a quick
-        capture note for the next vault session to triage.
+        No frontmatter, no headers — just the body, so it reads as a quick
+        capture note for the next vault session to triage. If the name is
+        already taken (same minute, same slug) a -2, -3 ... suffix is added:
+        two captures are always two notes, but one never overwrites the other.
         """
-        relpath = f"{INBOX_DIR}/{datetime.now():%Y-%m-%d-%H%M}-shopping-sweep.md"
-        path = self.root / relpath
-        path.parent.mkdir(parents=True, exist_ok=True)
+        stem = f"{datetime.now():%Y-%m-%d-%H%M}-{slug}"
+        directory = self.root / INBOX_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+
+        path = directory / f"{stem}.md"
+        suffix = 1
+        while path.exists():
+            suffix += 1
+            path = directory / f"{stem}-{suffix}.md"
+
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return relpath
+        return f"{INBOX_DIR}/{path.name}"
 
     def _append_to_completed_log(self, entries: list[str], today: str) -> None:
         """Append ledger entries, creating the log with frontmatter if absent."""

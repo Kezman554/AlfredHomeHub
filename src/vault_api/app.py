@@ -1,8 +1,8 @@
 """Vault API — REST access to the Obsidian vault for LAN clients.
 
 Serves vault content to the MorningSync alarm app and accepts writes to the
-rolling to-do and the discovered family of shopping lists, each landing as a
-git commit pushed to the vault repo. Runs as a container in the AlfredHomeHub
+rolling to-do, the discovered family of shopping lists, and the inbox, each
+landing as a git commit pushed to the vault repo. Runs as a container in the AlfredHomeHub
 compose stack on the Pi; see docker/docker-compose.yml.
 
 Endpoints live in routers/ — adding family-calendar later is a new router
@@ -16,21 +16,22 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .routers import chalkboard, health, schedule, shopping
+from .routers import chalkboard, health, inbox, schedule, shopping
 from .vault import VaultBusyError, VaultSyncError, VaultWriteError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(
     title="Alfred Vault API",
-    description="Obsidian vault content for LAN clients: reads, plus rolling to-do and shopping-list writes.",
-    version="0.3.0",
+    description="Obsidian vault content for LAN clients: reads, plus rolling to-do, shopping-list, and inbox writes.",
+    version="0.4.0",
 )
 
 app.include_router(health.router)
 app.include_router(chalkboard.router)
 app.include_router(schedule.router)
 app.include_router(shopping.router)
+app.include_router(inbox.router)
 
 
 # Write failures always leave the vault clone clean (Vault guarantees it), so

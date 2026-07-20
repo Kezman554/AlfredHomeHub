@@ -199,3 +199,38 @@ Alfred Home Hub — Progress Log
   sweep+capture) verified against a git-backed fixture seeded with the real
   alfred-tech.md content, not run against the real vault to avoid pushing
   test writes to the private ObsidianVault remote — NOT yet run on the Pi.
+
+2026-07-20
+- Inbox capture endpoint pair (src/vault_api/routers/inbox.py): POST /inbox
+  writes 0-inbox/YYYY-MM-DD-HHMM-slug.md holding the posted text verbatim —
+  no frontmatter, no headers — matching the vault's inbox convention (a few
+  plain bullets or prose, ephemeral). GET /inbox lists every 0-inbox/ .md as
+  [{filename, content}], newest first.
+- POST body is text/plain, not JSON: captures come from voice and shortcuts,
+  where wrapping a sentence in JSON is friction. Empty or >10k bodies 422.
+- Slug is the first 6 words kebab-cased, capped at 48 chars, falling back to
+  "note" when nothing kebab-able survives (the timestamp still makes the name
+  unique). Commit message "alfred api: inbox capture '<slug>'", authored as
+  Alfred <alfred@alfred.local>, same as T3/T4.
+- Reuses the existing write machinery unchanged — shared flock, pull
+  --ff-only, write, commit, push, hard-reset on failure. The only change to
+  existing code is _write_inbox_capture (previously the shopping sweep's
+  private helper) taking a slug and, on a name collision, suffixing -2, -3
+  rather than overwriting: no dedupe or merge, every POST is a new file, but
+  two captures in the same minute never clobber each other. Sweep behaviour
+  is unchanged.
+- Listing sorts by filename descending, not mtime: names lead with the
+  timestamp, and a fresh clone on the Pi gives every file the same checkout
+  mtime, so the name is the only capture time that survives git.
+- Deliberately not built: no tag parsing/routing (#todo, #idea), no
+  delete/edit/triage endpoint (inbox notes are triaged by hand in a vault
+  session), no dedupe or merge.
+- Tests: tests/test_inbox.py (25, all passing; 83 total) — slug cases
+  (word cap, length cap, punctuation, fallback), the write transaction
+  against a real local git origin+clone (raw content with no frontmatter,
+  filename shape, commit message + Alfred authorship, pushed to origin,
+  clean tree after, identical captures produce two files, CRLF normalised,
+  empty rejected), listing (newest first, non-.md ignored, missing dir ->
+  [], round trip), and four over HTTP via TestClient proving the text/plain
+  body binds (a wrong media_type would silently 422 every capture).
+  Write tests bypass the POSIX-only flock via monkeypatch, as in T5.
