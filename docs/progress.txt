@@ -234,3 +234,11 @@ Alfred Home Hub — Progress Log
   [], round trip), and four over HTTP via TestClient proving the text/plain
   body binds (a wrong media_type would silently 422 every capture).
   Write tests bypass the POSIX-only flock via monkeypatch, as in T5.
+- Deployed to the Pi (pull + compose rebuild of vault-api) and verified live
+  against the real vault, T3-style: POST returned 201 and landed
+  0-inbox/2026-07-20-1152-test-capture-from-alfred-api-inbox.md containing
+  exactly the posted text and nothing else; the vault clone committed it as
+  "alfred api: inbox capture '<slug>'" authored Alfred <alfred@alfred.local>,
+  left a clean tree, and pushed to origin; GET /inbox listed it back first of
+  seven. Test residue removed in a follow-up commit under the same shared
+  lock, inbox back to its six real notes.
