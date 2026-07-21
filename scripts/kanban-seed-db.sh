@@ -24,8 +24,19 @@ FORCE=0
 # --- Preconditions ------------------------------------------------------------
 [ -f "${SRC_DB}" ] || { echo "ERROR: source DB not found: ${SRC_DB}" >&2; exit 1; }
 
+# This half runs on the laptop, where `python3` may be a non-functional
+# Windows Store alias that resolves on PATH but errors when run. Pick the first
+# candidate that actually executes.
+PY=""
+for cand in python3 python py; do
+    if command -v "${cand}" >/dev/null 2>&1 && "${cand}" --version >/dev/null 2>&1; then
+        PY="${cand}"; break
+    fi
+done
+[ -n "${PY}" ] || { echo "ERROR: no working python interpreter found" >&2; exit 1; }
+
 # --- Snapshot source counts (the integrity baseline) --------------------------
-counts="$(python3 -c '
+counts="$("${PY}" -c '
 import sqlite3, sys
 db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
 q = lambda s: db.execute(s).fetchone()[0]
