@@ -288,3 +288,31 @@ Alfred Home Hub — Progress Log
   external dep resolved; export json/summary match the Electron format; the
   export git dance (pull, write, commit as Alfred, push, diff-guard no-op)
   verified against a throwaway bare origin. NOT yet built/run on the Pi.
+
+2026-07-21 (deployed live)
+- Kanban_App cloned to the Pi at ~/projects/Kanban_App (sibling of
+  AlfredHomeHub); DB seeded from the laptop via kanban-seed-db.sh — snapshot
+  9 projects / 234 / 107. Container built on the Pi (better-sqlite3 rebuilt
+  for ARM64 Node in the image) and started.
+- Verified live from the laptop:
+  - /stats = 9 / 234 / 107, exactly the seed snapshot (migration integrity:
+    laptop source == Pi API). smoke check: API card count == DB.
+  - Container stopped, force-removed, rebuilt from the bind-mounted volume;
+    counts unchanged — the DB copy survives a container teardown.
+  - Card created via POST /append persisted across a container restart and
+    read back intact; deleted afterwards so the Pi copy stays at 234.
+  - Vault export ran: 4-dev-hub/kanban-{export.json,summary.md} written,
+    committed as Alfred and pushed; content matches the live board
+    ("9 projects, 107 of 234 done"), timestamp current; fast-forwarded to the
+    laptop vault (HEAD 6b07c82).
+  - Nightly backup (03:27) + export (03:17) crons installed and each ran once.
+  - The DEPLOY.md pull-and-restart loop run verbatim end-to-end: pulls both
+    repos, rebuilds, smoke check "OK: kanban-api up, 234 cards (API == DB)".
+- Two fixes shaken out live: kanban-seed-db.sh now probes for a python that
+  actually runs (Windows Store python3 alias resolves but errors);
+  kanban-smoke.sh waits up to 15s for /health (the loop ran it during the
+  container's startup race).
+- Follow-ups: the Pi has no sqlite3 CLI, so the backup uses cp (safe at the
+  idle 03:27 slot) and skips the integrity check — apt install sqlite3 to get
+  online .backup + verification. Coordination: once this export cron is live,
+  the laptop should stop exporting kanban files from Electron (see DEPLOY.md).
