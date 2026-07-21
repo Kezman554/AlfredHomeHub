@@ -30,10 +30,12 @@ summary="$(python3 -c '
 import json, sys
 data = json.loads(sys.argv[1])
 status = data.get("status", "?")
+cards = data.get("cards", "?")
+projects = data.get("projects", "?")
 if status == "nochange":
     print("no-op: vault already up to date")
 else:
-    print(f"{status}: {data.get(\"cards\", \"?\")} cards, {data.get(\"projects\", \"?\")} projects")
+    print(f"{status}: {cards} cards, {projects} projects")
 ' "${response}" 2>&1)" || fail "unexpected response from export endpoint: ${response//$'\n'/ | }"
 
 log "OK: ${summary}"
