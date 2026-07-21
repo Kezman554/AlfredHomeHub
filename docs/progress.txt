@@ -242,3 +242,49 @@ Alfred Home Hub — Progress Log
   left a clean tree, and pushed to origin; GET /inbox listed it back first of
   seven. Test residue removed in a follow-up commit under the same shared
   lock, inbox back to its six real notes.
+
+2026-07-21
+- Kanban API on the Pi (Card N, rescoped): the board's data layer, wrapped as
+  an HTTP service in a container, port 8300. Data only — no board UI, and NOT a
+  DB migration: the laptop Electron app stays authoritative, the Pi serves a
+  COPY (see docs/pi-port-analysis.md). Foundation for the writable DailySync
+  tile and the future browser-tab board.
+- Split ownership, per the two-repo decision: the server + Dockerfile live in
+  the SEPARATE Kanban_App repo (pi-server/, wrapping its operations.js in place
+  so it never drifts); THIS repo's compose defines the kanban-api service and
+  builds it from ../../Kanban_App (Kanban_App cloned as a sibling of
+  AlfredHomeHub in ~/projects/). better-sqlite3 is rebuilt for ARM64 Node in
+  the image (the repo's node_modules copy is Electron-ABI).
+- docker/docker-compose.yml: kanban-api service — build context
+  ${KANBAN_REPO_PATH:-../../Kanban_App}, DB bind-mount
+  ${KANBAN_DATA_PATH:-/home/kezman554/kanban-data}:/data (so the container is
+  destroyable/rebuildable without data loss), 8300 published on 0.0.0.0,
+  restart unless-stopped. Matches the vault-api pattern.
+- scripts/ (all bash; syntax-checked, exec bit recorded):
+  - kanban-seed-db.sh (LAPTOP-run) — one-time copy of the board DB to the Pi,
+    NOT a migration; snapshots project/card/done counts first and prints them
+    to check against /stats. Refuses to clobber an existing Pi copy without
+    --force.
+  - kanban-export.sh + setup-kanban-export.sh — Pi-side vault export: curls
+    /export/json + /export/summary, writes 4-dev-hub/kanban-export.json +
+    kanban-summary.md into the vault, commits as Alfred and pushes, all under
+    the shared .git/alfred-write.lock (serialises with vault-sync + vault API
+    writes). The laptop's session-start pull carries it back — resolves the
+    card's open sync-direction question. Nightly 03:17 cron; diff-guarded so an
+    unchanged board makes no commit. git stays on the host; the container has
+    no vault access.
+  - kanban-backup.sh + setup-kanban-backup.sh — nightly 03:27 snapshot of the
+    DB copy to ~/backups/kanban (sqlite3 .backup when present, else cp; keeps
+    last 14; integrity-checks the snapshot). Simplest thing that survives an
+    SD/SSD failure.
+  - kanban-smoke.sh — 3-check smoke test: container running, /health, and API
+    card count == DB card count.
+- DEPLOY.md: 8300 row (bookmark http://192.168.1.100:8300 — JSON banner, not a
+  board), a Kanban section with the two-repo layout, first-time bring-up, the
+  one-command pull-and-restart loop, and the DB-ownership caveat.
+- Verified on the LAPTOP against a copy of the board DB (container-like layout,
+  fresh Node-ABI better-sqlite3): /stats = 9 projects / 234 cards / 107 done
+  (board has grown from the card's 233); append persists + reads back with the
+  external dep resolved; export json/summary match the Electron format; the
+  export git dance (pull, write, commit as Alfred, push, diff-guard no-op)
+  verified against a throwaway bare origin. NOT yet built/run on the Pi.

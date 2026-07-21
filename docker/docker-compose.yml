@@ -4,6 +4,7 @@
 # Ports on the Pi:
 #   8123 — Home Assistant
 #   8200 — Vault API (vault content + rolling to-do writes for LAN clients)
+#   8300 — Kanban API (HTTP over the Kanban board's data layer; no UI)
 
 services:
   homeassistant:
@@ -52,5 +53,36 @@ services:
     # Published on all interfaces so LAN devices (the alarm app) can reach it.
     ports:
       - "8200:8200"
+
+    restart: unless-stopped
+
+  kanban-api:
+    container_name: kanban-api
+    # Built from the SEPARATE Kanban_App repo, cloned as a sibling of
+    # AlfredHomeHub on the Pi (~/projects/Kanban_App). The context is that repo
+    # root so the Dockerfile can copy its src/; the API wraps that repo's
+    # operations.js in place — it is never vendored here, so it can't drift.
+    # Relative to THIS file's dir (docker/): ../../Kanban_App.
+    build:
+      context: ${KANBAN_REPO_PATH:-../../Kanban_App}
+      dockerfile: pi-server/Dockerfile
+
+    environment:
+      # Path *inside* the container — matches the bind mount below.
+      KANBAN_DB_PATH: /data/kanban.db
+      KANBAN_API_PORT: "8300"
+
+    volumes:
+      # The board DB COPY lives on the host, so the container is destroyable and
+      # rebuildable without data loss. This is a copy — the laptop Electron app
+      # stays authoritative until the UI-port card repoints it (see
+      # docs/pi-port-analysis.md). Seeded once by scripts/kanban-seed-db.sh.
+      - ${KANBAN_DATA_PATH:-/home/kezman554/kanban-data}:/data
+      - /etc/localtime:/etc/localtime:ro
+
+    # Published on all interfaces so LAN clients (the DailySync tile) can reach
+    # it, same as vault-api.
+    ports:
+      - "8300:8300"
 
     restart: unless-stopped
