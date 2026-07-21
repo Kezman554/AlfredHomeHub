@@ -31,15 +31,24 @@ if ! response="$(curl -sS --fail-with-body -X POST -m "${CURL_TIMEOUT}" "${SWEEP
     fail "sweep request failed: ${response//$'\n'/ | }"
 fi
 
-# Summarise the JSON response for the log: count swept, and the items.
+# Summarise the JSON response for the log. The combined sweep clears the
+# rolling to-do AND every active shopping list, so report both counts — a
+# shopping-only sweep must not log as a no-op.
 summary="$(python3 -c '
 import json, sys
 data = json.loads(sys.argv[1])
-count = data["count"]
-if count == 0:
+todo = data.get("count", 0)
+shop = data.get("shopping_count", 0)
+if not todo and not shop:
     print("no-op: nothing ticked")
 else:
-    print(f"swept {count} item(s): " + "; ".join(data["swept"]))
+    bits = []
+    if todo:
+        bits.append(str(todo) + " to-do: " + "; ".join(data["swept"]))
+    if shop:
+        items = [s["item"] + " (from " + s["list"] + ")" for s in data["shopping_swept"]]
+        bits.append(str(shop) + " shopping: " + "; ".join(items))
+    print("swept " + "; ".join(bits))
 ' "${response}" 2>&1)" || fail "unexpected response from sweep endpoint: ${response//$'\n'/ | }"
 
 log "OK: ${summary}"
