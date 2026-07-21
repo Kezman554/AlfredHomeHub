@@ -94,11 +94,15 @@ curl -s http://192.168.1.100:8300/stats # {"projects":9,"cards":...,"done":107,.
 > `up -d --build`.
 >
 > **Vault export — single writer:** the **Pi** is the only writer of
-> `4-dev-hub/kanban-export.json` + `kanban-summary.md` (nightly cron +
-> `scripts/kanban-export.sh`). The Electron app's "sync to vault" must not be
-> used, and the browser board's equivalent button is intentionally disabled
-> (the export runs on the Pi). This resolves the dual-writer question from the
-> Card N report.
+> `4-dev-hub/kanban-export.json` + `kanban-summary.md`. Both the nightly cron
+> (`scripts/kanban-export.sh`) and the browser board's "Sync to Vault" button
+> now go through **one path** — `POST /export/run` on the Kanban API, which
+> regenerates the files, commits as Alfred and pushes, under the shared vault
+> write lock (`.git/alfred-write.lock`, serialised with vault-sync + the vault
+> API). The container holds a vault (rw) + `~/.ssh` (ro) mount for this, exactly
+> like vault-api. The browser only *triggers* the export — it never writes the
+> vault itself, so the Pi stays the single writer. The Electron app's "sync to
+> vault" must still not be used.
 
 ## Browser board (UI-port)
 
@@ -120,7 +124,7 @@ each degrades with a visible message):
 | Open project folder in Explorer | ❌ Removed (desktop-only) |
 | Read PRD / progress / CLAUDE.md into prompts | ❌ Removed (files live on the laptop) |
 | AI prompt generation + API-key settings | ❌ Removed (never ship a key to a browser) |
-| "Sync to vault" button | ❌ Disabled (the Pi exports automatically) |
+| "Sync to vault" button | ✅ Works — triggers `POST /export/run` on the Pi (the Pi commits + pushes; the browser only triggers, so the Pi stays the single writer). Shows in-progress → "Exported N cards" / a visible error |
 | Clear-all-data | ❌ Disabled (too destructive for the shared board) |
 | Write-prompt-to-temp / launch Claude Code | ❌ Removed (copy-to-clipboard still works) |
 | Embedded terminal | ❌ Off (already dead pre-port — node-pty) |

@@ -355,3 +355,24 @@ Alfred Home Hub — Progress Log
 - Nick verifies the actual laptop+phone browser open and adopts the browser
   board as the write surface; the Electron app is now dev-only/read-only, and
   the laptop DB remains as rollback.
+
+2026-07-21 (later — Sync to Vault button wired to the Pi)
+- The browser board's "Sync to Vault" button now works: it triggers a new
+  POST /export/run on the Kanban API, which regenerates kanban-export.json +
+  kanban-summary.md, commits as Alfred and pushes — the loose end the UI port
+  left (button was disabled but never repointed).
+- One code path for button AND cron: scripts/kanban-export.sh is now a thin
+  trigger that curls POST /export/run (same shape as sweep-todo.sh), instead of
+  doing its own host-side git. The nightly cron still runs the same script on
+  the same schedule; it just routes through the endpoint now. (No new
+  dependency — the old script already curled the container for the data.)
+- Compose: kanban-api gains a vault (rw) + ~/.ssh (ro) mount + GIT_SSH_COMMAND
+  + VAULT_PATH, mirroring vault-api, so the endpoint can commit + push. The
+  export takes the shared .git/alfred-write.lock, serialising with vault-sync
+  and the vault API. The browser only triggers — the Pi stays the single
+  writer of 4-dev-hub/kanban-*.
+- Concurrency: in-process busy flag (409 on overlap) + the shared flock across
+  processes. Dockerfile adds git+openssh-client and runs as USER node for the
+  ~/.ssh mount. setup-kanban-export.sh updated to the EXPORT_URL trigger.
+- DEPLOY.md: feature-gap table row flipped (Sync to Vault ✅), single-writer
+  block rewritten around the one endpoint path.

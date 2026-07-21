@@ -73,13 +73,27 @@ services:
       # Path *inside* the container — matches the bind mount below.
       KANBAN_DB_PATH: /data/kanban.db
       KANBAN_API_PORT: "8300"
+      # Vault path inside the container (matches the mount below). POST
+      # /export/run commits + pushes the export from here.
+      VAULT_PATH: /vault
+      # Non-interactive SSH for the export push, same as vault-api. accept-new
+      # tolerates a missing github.com known_hosts entry without ever accepting
+      # a *changed* host key.
+      GIT_SSH_COMMAND: ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
 
     volumes:
-      # The board DB COPY lives on the host, so the container is destroyable and
-      # rebuildable without data loss. This is a copy — the laptop Electron app
-      # stays authoritative until the UI-port card repoints it (see
-      # docs/pi-port-analysis.md). Seeded once by scripts/kanban-seed-db.sh.
+      # The board DB is now authoritative on the Pi (migrated from the laptop),
+      # on the host so the container is destroyable/rebuildable without data
+      # loss. Seeded/re-seeded by scripts/kanban-seed-db.sh.
       - ${KANBAN_DATA_PATH:-/home/kezman554/kanban-data}:/data
+      # The vault clone, read-write: POST /export/run writes the export files,
+      # commits and pushes. Shares the vault write lock (.git/alfred-write.lock)
+      # with vault-sync and the vault API, so exports serialise with them.
+      - ${VAULT_HOST_PATH:-/home/kezman554/alfred-vault}:/vault
+      # The Pi user's SSH dir for the deploy key (write access) + known_hosts.
+      # Read-only; container UID 1000 (node) matches kezman554 so the key's 600
+      # perms still allow reading. Lands at /home/node/.ssh (git's $HOME).
+      - /home/kezman554/.ssh:/home/node/.ssh:ro
       - /etc/localtime:/etc/localtime:ro
 
     # Published on all interfaces so LAN clients (the DailySync tile) can reach
