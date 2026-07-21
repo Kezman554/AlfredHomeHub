@@ -336,3 +336,22 @@ Alfred Home Hub — Progress Log
 - Vault export single-writer resolved: the Pi is the only writer of
   4-dev-hub/kanban-{export.json,summary.md}; Electron/browser "sync to vault"
   is not used (browser button disabled). Closes the dual-writer flag from N.
+
+2026-07-21 (cutover done live)
+- Browser board deployed and the DB migration cut over. Both repos pulled on
+  the Pi; container stopped; Pi DB re-seeded fresh from the live laptop copy
+  (9 projects / 235 cards / 108 done); multi-stage image rebuilt on the Pi
+  (React UI + server) and started.
+- Verified live from the laptop:
+  - /stats = 9 / 235 / 108 — exact match to the fresh laptop snapshot (no cards
+    lost). smoke check: API == DB (235).
+  - Board served at 192.168.1.100:8300 (SPA root + JS/CSS assets 200), same
+    origin as the API.
+  - Cross-client write visibility: a PATCH status from one client is seen by a
+    second client's fresh read (the phone-tick -> laptop-refresh path);
+    restored, back to 235/108.
+  - Vault export re-run from the authoritative DB: "108 of 235", committed +
+    pushed. The Pi is the single writer of 4-dev-hub/kanban-{export,summary}.
+- Nick verifies the actual laptop+phone browser open and adopts the browser
+  board as the write surface; the Electron app is now dev-only/read-only, and
+  the laptop DB remains as rollback.
