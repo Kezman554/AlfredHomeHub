@@ -19,7 +19,7 @@
 |---|---|---|
 | 8123 | Home Assistant | Host networking (device discovery) |
 | 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/{list_id}` GET/POST add, `/tick`, `/drop`), `/inbox` (GET list, POST capture — body is `text/plain`) |
-| 8300 | Kanban API | HTTP over the Kanban board's data layer — **data only, no board UI** (bookmark **`http://192.168.1.100:8300`**; it returns a JSON banner). Runs against a *copy* of the board DB; the laptop Electron app stays authoritative until the UI-port card. `/health`, `/stats`, `/projects`, `/projects/{id}` (+ `/workable`, `/done`, `/next-letter`, `POST /append`), `/cards/{id}` (+ `/status`, `/details`, `/notes`, `/prompt`, `/clear-dependencies`, `DELETE`), `/export/json`, `/export/summary` |
+| 8300 | Kanban board + API | The **browser board** — bookmark **`http://192.168.1.100:8300`** on laptop and phone. The React UI is served as static files from the same container, over the board's data API (same origin, so no CORS). **The Pi DB is now authoritative** (migrated from the laptop); the Electron app is dev-only/read-only. API: `/health`, `/stats`, `/projects`, `/projects/{id}` (+ `/workable`, `/done`, `/next-letter`, `POST /append`), `/cards/{id}` (+ `/status`, `/details`, `/notes`, `/prompt`, `/clear-dependencies`, `DELETE`), `/export/json`, `/export/summary`, `/export/all-projects` |
 
 ## Deploy Model
 
@@ -81,9 +81,48 @@ scripts/kanban-smoke.sh                 # container up, API healthy, API card co
 curl -s http://192.168.1.100:8300/stats # {"projects":9,"cards":...,"done":107,...}
 ```
 
-> **DB ownership:** the board DB on the Pi is a disposable copy. The laptop
-> Electron app is authoritative until the UI-port card repoints the UI at this
-> API. Don't hand-edit the Pi copy expecting it to flow back — it won't.
-> Coordination note: once the Pi export cron is live, the laptop should stop
-> pushing its own `kanban-export.json`/`kanban-summary.md` so the two don't
-> both write `4-dev-hub/` (the Pi is the export owner now).
+> **DB ownership (post UI-port):** the Pi DB is now **authoritative**. The
+> browser board at `192.168.1.100:8300` is the single write surface — use it on
+> laptop and phone. The **Electron app (`Desktop\KanbanBuild`) is dev-only /
+> read-only**: do not tick, add, or edit cards there, or it diverges from the
+> Pi. The laptop DB copy stays intact as a rollback.
+>
+> **Migration / re-seed:** the authoritative Pi DB was copied fresh from the
+> live laptop DB via `scripts/kanban-seed-db.sh --force` (non-destructive — the
+> laptop file is untouched). To re-seed again, stop the container first
+> (`docker compose stop kanban-api`), run the seed with `--force`, then
+> `up -d --build`.
+>
+> **Vault export — single writer:** the **Pi** is the only writer of
+> `4-dev-hub/kanban-export.json` + `kanban-summary.md` (nightly cron +
+> `scripts/kanban-export.sh`). The Electron app's "sync to vault" must not be
+> used, and the browser board's equivalent button is intentionally disabled
+> (the export runs on the Pi). This resolves the dual-writer question from the
+> Card N report.
+
+## Browser board (UI-port)
+
+The Kanban board opens in a browser tab on laptop or phone at
+`http://192.168.1.100:8300`. It is the same React UI as the Electron app, with
+the Electron `preload.js` bridge reimplemented over `fetch` to the local API
+(`src/renderer/electron-web-shim.js` in the Kanban repo) and served as static
+files by the Pi container. Redeploy is the same pull-and-restart loop above —
+the multi-stage image rebuilds the UI.
+
+**Feature gaps vs the desktop app** (browser can't do these; no dead buttons —
+each degrades with a visible message):
+
+| Feature | Browser behaviour |
+|---|---|
+| Import JSON (open file) | ✅ Works — file picker upload |
+| Export project(s) to JSON (save file) | ✅ Works — browser download |
+| Set project directory | ⚠️ Manual path entry (no native folder picker) |
+| Open project folder in Explorer | ❌ Removed (desktop-only) |
+| Read PRD / progress / CLAUDE.md into prompts | ❌ Removed (files live on the laptop) |
+| AI prompt generation + API-key settings | ❌ Removed (never ship a key to a browser) |
+| "Sync to vault" button | ❌ Disabled (the Pi exports automatically) |
+| Clear-all-data | ❌ Disabled (too destructive for the shared board) |
+| Write-prompt-to-temp / launch Claude Code | ❌ Removed (copy-to-clipboard still works) |
+| Embedded terminal | ❌ Off (already dead pre-port — node-pty) |
+
+Anything in the ❌ rows is what the **dev-only Electron app** is still for.

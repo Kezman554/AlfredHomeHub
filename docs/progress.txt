@@ -316,3 +316,23 @@ Alfred Home Hub — Progress Log
   idle 03:27 slot) and skips the integrity check — apt install sqlite3 to get
   online .backup + verification. Coordination: once this export cron is live,
   the laptop should stop exporting kanban files from Electron (see DEPLOY.md).
+
+2026-07-21 (later — Kanban browser board / UI port)
+- The Kanban board now opens as a browser tab on laptop + phone at
+  192.168.1.100:8300, served off the Pi. The card-N container was extended
+  from data-only to also build + serve the React UI (multi-stage image); the
+  Electron preload bridge is reimplemented over fetch in the Kanban repo
+  (src/renderer/electron-web-shim.js). A rewire, not a rebuild.
+- AlfredHomeHub changes: docker-compose comment (8300 is now the board, not
+  just an API); DEPLOY.md — 8300 row rewritten, a Browser-board section with
+  the feature-gap table, and the DB-ownership block updated (Pi now
+  authoritative, Electron dev-only/read-only, migration/re-seed steps,
+  vault-export single-writer resolution). No compose functional change — same
+  build context, same port; the image just carries the UI now.
+- DB migration (this deploy): the authoritative Pi DB is re-copied fresh from
+  the LIVE laptop DB via kanban-seed-db.sh --force (non-destructive; laptop
+  file untouched as rollback), replacing the card-N build snapshot. Counts
+  verified against the live laptop snapshot at copy time.
+- Vault export single-writer resolved: the Pi is the only writer of
+  4-dev-hub/kanban-{export.json,summary.md}; Electron/browser "sync to vault"
+  is not used (browser button disabled). Closes the dual-writer flag from N.

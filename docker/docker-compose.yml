@@ -4,7 +4,7 @@
 # Ports on the Pi:
 #   8123 — Home Assistant
 #   8200 — Vault API (vault content + rolling to-do writes for LAN clients)
-#   8300 — Kanban API (HTTP over the Kanban board's data layer; no UI)
+#   8300 — Kanban board + API (browser board UI + HTTP over its data layer)
 
 services:
   homeassistant:
@@ -63,6 +63,8 @@ services:
     # root so the Dockerfile can copy its src/; the API wraps that repo's
     # operations.js in place — it is never vendored here, so it can't drift.
     # Relative to THIS file's dir (docker/): ../../Kanban_App.
+    # The image is multi-stage: it also builds the React board and serves it as
+    # static files, so 8300 is the browser board itself, not just an API.
     build:
       context: ${KANBAN_REPO_PATH:-../../Kanban_App}
       dockerfile: pi-server/Dockerfile
