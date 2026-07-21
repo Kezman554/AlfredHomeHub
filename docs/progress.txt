@@ -376,3 +376,23 @@ Alfred Home Hub — Progress Log
   ~/.ssh mount. setup-kanban-export.sh updated to the EXPORT_URL trigger.
 - DEPLOY.md: feature-gap table row flipped (Sync to Vault ✅), single-writer
   block rewritten around the one endpoint path.
+
+2026-07-21 (Sync to Vault — deployed live)
+- kanban-api rebuilt on the Pi with the vault (rw) + ~/.ssh (ro) mounts.
+  Verified live:
+  - POST /export/run: container committed + pushed as Alfred (236 cards / 9
+    projects); vault tree clean, pushed to origin. Board + /stats unaffected.
+  - Concurrency: two concurrent POSTs -> one 200, one 409 (busy guard); the
+    shared flock is the cross-process guard.
+  - Nightly cron script (thin trigger) exits 0, logs "OK: committed: 236 cards".
+- Fix shaken out live: kanban-export.sh's log-summary python -c had
+  backslash-escaped quotes nested in single-quoted bash (invalid Python) — the
+  export succeeded but the script logged ERROR and exited 1. Extracted vars
+  first (as sweep-todo.sh does). Pushed.
+- CAVEAT (laptop-side, pre-existing): the current export is on origin/main, but
+  the laptop vault can't fast-forward it — the working tree has uncommitted
+  local edits to 4-dev-hub/kanban-export.json + kanban-summary.md (stale,
+  written by the retired Electron app) plus other local changes, and is behind
+  origin. Not touched (Nick's data). Cutover cleanup for Nick: discard the two
+  Pi-owned kanban files locally and reconcile the rest, then pull. Until then,
+  Claude Code session-start reads the stale local export.
