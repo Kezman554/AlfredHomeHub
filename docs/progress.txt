@@ -422,3 +422,16 @@ Alfred Home Hub — Progress Log
   untouched, sweeps all active lists, nothing-bought no-op, and the HTTP route
   resolves to sweep_shopping (not swallowed by greedy add). Updated the
   combined-sweep test for the BOUGHT/"Bought off" wording. App -> 0.5.0.
+
+2026-07-21 (shopping sweep — deployed live)
+- vault-api rebuilt on the Pi with POST /shopping/sweep. Verified live against
+  the real vault (no lists had ticked items, so no collateral): added + ticked
+  a "TEST sweep probe" on the fitness list, POST /shopping/sweep -> line gone
+  (2 real fitness items intact), inbox capture "- Bought off Fitness Equipment
+  — Rolling Buy List: TEST sweep probe", completed-log "- BOUGHT 2026-07-21:
+  ... (from Fitness ...)", committed "alfred shopping sweep: 1 item bought" and
+  pushed. Test residue (capture file + BOUGHT line) removed in a follow-up
+  commit under the shared lock; vault tree clean.
+- sweep-todo.sh (host cron script) updated + pulled on the Pi: the nightly log
+  now reports shopping counts too, so a shopping-only sweep no longer logs as a
+  no-op. No container rebuild (host script).
