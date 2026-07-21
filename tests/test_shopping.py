@@ -480,10 +480,12 @@ def test_sweep_shopping_and_todo_together_one_commit(tmp_path, monkeypatch):
     inbox = sorted((vault.root / "0-inbox").glob("*-shopping-sweep.md"))
     assert len(inbox) == 1
     capture_text = inbox[0].read_text(encoding="utf-8")
-    assert "swept from Alfred Tech — Rolling Buy List: Sweep me" in capture_text
+    assert "Bought off Alfred Tech — Rolling Buy List: Sweep me" in capture_text
 
     completed = (vault.root / COMPLETED_LOG).read_text(encoding="utf-8")
-    assert "Sweep me" in completed
+    # Shopping bought items are marked BOUGHT (distinct from a to-do "completed").
+    assert "- BOUGHT " in completed
+    assert "Sweep me (from Alfred Tech — Rolling Buy List)" in completed
 
 
 def test_sweep_with_nothing_ticked_is_a_clean_noop(tmp_path, monkeypatch):
@@ -520,6 +522,96 @@ def test_sweep_todo_only_produces_no_inbox_capture(tmp_path, monkeypatch):
 
     inbox_dir = vault.root / "0-inbox"
     assert not inbox_dir.exists() or not list(inbox_dir.glob("*"))
+
+
+def test_sweep_shopping_only_removes_bought_logs_bought_and_captures(tmp_path, monkeypatch):
+    vault = make_vault(tmp_path, monkeypatch)
+    list_id = "6-life/shopping/alfred-tech.md"
+    added = vault.add_shopping_item(list_id, "Dip bars")
+    vault.tick_shopping_item(list_id, added.line)
+
+    # A ticked rolling-todo item must NOT be swept by the shopping-only sweep.
+    todo_path = vault.root / ROLLING_TODO
+    todo_path.write_text(
+        todo_path.read_text(encoding="utf-8") + "- [x] a ticked todo\n", encoding="utf-8"
+    )
+
+    commits_before = len(git_log(vault.root).splitlines())
+    result = vault.sweep_shopping()
+
+    assert result.todo_swept == []
+    assert result.shopping_swept == [{"list": "Alfred Tech — Rolling Buy List", "item": "Dip bars"}]
+    assert len(git_log(vault.root).splitlines()) == commits_before + 1
+
+    _, items = vault.shopping_list_items(list_id)
+    assert "Dip bars" not in [i.text for i in items]
+
+    # to-do left untouched by the shopping-only sweep
+    assert "- [x] a ticked todo" in todo_path.read_text(encoding="utf-8")
+
+    capture = sorted((vault.root / "0-inbox").glob("*-shopping-sweep.md"))[0].read_text(
+        encoding="utf-8"
+    )
+    assert "Bought off Alfred Tech — Rolling Buy List: Dip bars" in capture
+
+    completed = (vault.root / COMPLETED_LOG).read_text(encoding="utf-8")
+    assert "- BOUGHT " in completed
+    assert "Dip bars (from Alfred Tech — Rolling Buy List)" in completed
+
+
+def test_sweep_shopping_touches_all_active_lists(tmp_path, monkeypatch):
+    vault = make_vault(tmp_path, monkeypatch)
+    a = "6-life/shopping/alfred-tech.md"
+    b = "6-life/shopping/fashion.md"
+    for lid, item in [(a, "Item A"), (b, "Item B")]:
+        added = vault.add_shopping_item(lid, item)
+        vault.tick_shopping_item(lid, added.line)
+
+    result = vault.sweep_shopping()
+    swept_items = {s["item"] for s in result.shopping_swept}
+    assert swept_items == {"Item A", "Item B"}
+    assert "Item A" not in [i.text for i in vault.shopping_list_items(a)[1]]
+    assert "Item B" not in [i.text for i in vault.shopping_list_items(b)[1]]
+
+
+def test_sweep_shopping_nothing_bought_is_a_clean_noop(tmp_path, monkeypatch):
+    vault = make_vault(tmp_path, monkeypatch)
+    commits_before = len(git_log(vault.root).splitlines())
+    result = vault.sweep_shopping()
+    assert result.shopping_swept == []
+    assert len(git_log(vault.root).splitlines()) == commits_before
+    inbox = vault.root / "0-inbox"
+    assert not inbox.exists() or not list(inbox.glob("*"))
+
+
+def test_http_shopping_sweep_routes_not_swallowed_by_greedy_add(tmp_path, monkeypatch):
+    # "/shopping/sweep" must reach sweep_shopping, not the greedy add route with
+    # list_id="sweep" — so it is registered ahead of POST /shopping/{list_id}.
+    from fastapi.testclient import TestClient
+
+    from vault_api.app import app
+    from vault_api.dependencies import get_vault
+
+    vault = make_vault(tmp_path, monkeypatch)
+    list_id = "6-life/shopping/alfred-tech.md"
+    added = vault.add_shopping_item(list_id, "Sweep via HTTP")
+    vault.tick_shopping_item(list_id, added.line)
+
+    app.dependency_overrides[get_vault] = lambda: vault
+    client = TestClient(app)
+    try:
+        r = client.post("/shopping/sweep")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["shopping_count"] == 1
+        assert body["shopping_swept"] == [
+            {"list": "Alfred Tech — Rolling Buy List", "item": "Sweep via HTTP"}
+        ]
+        # gone from the list afterwards
+        r = client.get(f"/shopping/{list_id}")
+        assert "Sweep via HTTP" not in [i["text"] for i in r.json()["items"]]
+    finally:
+        app.dependency_overrides.pop(get_vault, None)
 
 
 # --- HTTP layer: routing (the greedy {list_id:path} ordering) -------------------

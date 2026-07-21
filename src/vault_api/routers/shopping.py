@@ -79,18 +79,38 @@ def create_shopping_list(body: CreateShoppingListRequest, vault: Vault = Depends
     return created.to_json()
 
 
-# Registration order matters: {list_id:path} is a greedy match, so the /tick
-# and /drop routes must be tried before the plain add route or they'd never
-# be reached — a POST to ".../fitness.md/tick" would otherwise match the add
-# route with list_id="6-life/shopping/fitness.md/tick".
+# Registration order matters: {list_id:path} is a greedy match, so /sweep, /tick
+# and /drop must be registered before the plain add route or they'd never be
+# reached — a POST to "/shopping/sweep" would otherwise match the add route with
+# list_id="sweep", and ".../fitness.md/tick" with list_id="...fitness.md/tick".
+
+
+@router.post("/shopping/sweep")
+def sweep_shopping(vault: Vault = Depends(get_vault)) -> dict:
+    """Clear bought items from every active shopping list: remove each '- [x]'
+    line, log it BOUGHT in the completed-log, and write ONE inbox capture naming
+    what was bought from which list (the handoff for a vault session to file it
+    into the right inventory).
+
+    The shopping-only counterpart to POST /chalkboard/sweep (which sweeps the
+    to-do and shopping together) — same code path, so they can't diverge. Backs
+    a future "clear bought" button; the nightly 3am job already sweeps shopping
+    via the combined endpoint. Nothing bought anywhere is a clean no-op.
+    """
+    result = vault.sweep_shopping()
+    return {
+        "shopping_swept": result.shopping_swept,
+        "shopping_count": len(result.shopping_swept),
+    }
 
 
 @router.post("/shopping/{list_id:path}/tick")
 def tick_shopping_item(
     list_id: str, body: ShoppingTargetRequest, vault: Vault = Depends(get_vault)
 ) -> dict:
-    """Mark the targeted item bought ('- [ ]' -> '- [x]'). Stays in the doc,
-    struck through by renderers, until the sweep removes it."""
+    """Mark the targeted item bought ('- [ ]' -> '- [x]'). It stays in the doc,
+    struck through by renderers, until a sweep (POST /shopping/sweep, or the
+    nightly combined job) removes it and logs it BOUGHT to the completed-log."""
     try:
         vault.tick_shopping_item(list_id, body.line)
     except ListNotFoundError as exc:

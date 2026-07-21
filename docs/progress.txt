@@ -396,3 +396,29 @@ Alfred Home Hub — Progress Log
   origin. Not touched (Nick's data). Cutover cleanup for Nick: discard the two
   Pi-owned kanban files locally and reconcile the rest, then pull. Until then,
   Claude Code session-start reads the stale local export.
+
+2026-07-21 (shopping sweep: BOUGHT marking + dedicated endpoint)
+- Closed the real gaps in the shopping "tick = bought" flow. The sweep itself
+  already existed (the combined Vault.sweep() has swept every active
+  life/shopping list since 18 Jul, via POST /chalkboard/sweep + the 3am
+  sweep-todo.sh cron, writing an inbox capture + completed-log entries). The
+  task's premise "no sweep exists" was mistaken; refined in place rather than
+  building a duplicate (would have double-swept).
+- Shopping bought items are now logged "- BOUGHT <date>: <item> (from <list>)"
+  in completed-log.md — distinct from a to-do "completed" and a "dropped", so
+  the ledger reads as a real done/bought/dropped record. Capture wording is now
+  "- Bought off <list>: <item>" (was "swept from").
+- Shopping-sweep logic extracted to Vault._collect_shopping_sweep and shared by
+  the combined sweep() and a new Vault.sweep_shopping() (shopping-only), so the
+  two can never diverge. New POST /shopping/sweep runs the shopping-only sweep
+  (commit msg "alfred shopping sweep: N items bought"); registered ahead of the
+  greedy /shopping/{list_id} add route so "/shopping/sweep" isn't swallowed.
+- No second cron: per the design call, the existing 3am combined sweep already
+  clears shopping. /shopping/sweep is the on-demand trigger (backs a future
+  "clear bought" button). Tick docstring sharpened to point at the sweep +
+  BOUGHT logging (it referenced a sweep that, in fact, already existed).
+- Tests: tests/test_shopping.py +4 (87 total, all passing) — shopping-only
+  sweep removes bought/logs BOUGHT/captures "Bought off" and leaves the to-do
+  untouched, sweeps all active lists, nothing-bought no-op, and the HTTP route
+  resolves to sweep_shopping (not swallowed by greedy add). Updated the
+  combined-sweep test for the BOUGHT/"Bought off" wording. App -> 0.5.0.

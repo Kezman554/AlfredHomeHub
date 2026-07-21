@@ -882,18 +882,85 @@ class Vault:
 
         return InboxNote(filename=relpath.split("/")[-1], content=body + "\n")
 
+    def _collect_shopping_sweep(
+        self, today: str
+    ) -> tuple[list[dict[str, str]], list[str], list[str], list[str]]:
+        """Remove bought ('- [x]') lines from every active shopping list.
+
+        Mutates the working tree (rewrites each touched list file) and returns
+        (swept, touched_relpaths, completed_log_entries, capture_lines) for the
+        caller to commit. Shared by the combined sweep() and the shopping-only
+        sweep_shopping(), so the two can never diverge.
+
+        Bought items are logged as BOUGHT — distinct from a to-do "completed"
+        and a "dropped" — and the capture names each item's source list, so a
+        vault session can file it into the right inventory per that list's
+        playbook. The sweep never interprets the playbook itself (that reshape
+        is Alfred's triage work, not the cron's).
+        """
+        swept: list[dict[str, str]] = []
+        touched: list[str] = []
+        completed_entries: list[str] = []
+        capture_lines: list[str] = []
+        for summary in self._scan_shopping_lists():
+            path = self.root / summary.id
+            lines = self._read_for_write(path).split("\n")
+            kept: list[str] = []
+            bodies: list[str] = []
+            for line in lines:
+                match = _ITEM.match(line)
+                if match and match.group("box").lower() == "x":
+                    bodies.append(match.group("body"))
+                else:
+                    kept.append(line)
+            if not bodies:
+                continue
+            path.write_text("\n".join(kept), encoding="utf-8")
+            touched.append(summary.id)
+            for body in bodies:
+                swept.append({"list": summary.title, "item": body})
+                completed_entries.append(f"- BOUGHT {today}: {body} (from {summary.title})")
+                capture_lines.append(f"- Bought off {summary.title}: {body}")
+        return swept, touched, completed_entries, capture_lines
+
+    def sweep_shopping(self) -> SweepResult:
+        """Sweep bought items from every active shopping list only (not the
+        rolling to-do), in one git transaction — one commit, or none if nothing
+        was bought anywhere.
+
+        The on-demand shopping-only trigger (a "clear bought" click); the same
+        machinery the nightly combined sweep() runs through _collect_shopping_
+        sweep, so they can't diverge. Bought lines are removed, logged BOUGHT in
+        COMPLETED_LOG, and named in ONE 0-inbox capture for the next vault
+        session to file into the right inventory.
+        """
+        today = date.today().isoformat()
+        with self._write_lock():
+            self._pull()
+            swept, touched, completed_entries, capture_lines = self._collect_shopping_sweep(today)
+            if not swept:
+                return SweepResult(todo_swept=[], shopping_swept=[])
+            self._append_to_completed_log(completed_entries, today)
+            paths = touched + [COMPLETED_LOG, self._write_inbox_capture(capture_lines)]
+            count = len(swept)
+            self._commit_and_push(
+                paths, f"alfred shopping sweep: {count} item{'s' if count != 1 else ''} bought"
+            )
+        return SweepResult(todo_swept=[], shopping_swept=swept)
+
     def sweep(self) -> SweepResult:
         """Sweep ticked items from the rolling to-do and every active shopping
         list, in one git transaction — one commit, or none if nothing was
         ticked anywhere.
 
         Rolling-todo sweep behaviour is unchanged: ticked lines move to
-        COMPLETED_LOG, no capture file. Shopping additionally gets ONE
-        0-inbox capture file, written only when at least one shopping item
-        was swept, naming each item's source list — this is how playbook
-        notes embedded in list files (e.g. "bought items go to the hardware
-        inventory") get actioned later by a vault session; the sweep itself
-        never interprets them.
+        COMPLETED_LOG marked "completed", no capture file. Shopping bought items
+        are logged BOUGHT and additionally get ONE 0-inbox capture file (written
+        only when at least one was bought), naming each item's source list —
+        this is how playbook notes embedded in list files (e.g. "bought items go
+        to the hardware inventory") get actioned later by a vault session; the
+        sweep itself never interprets them. Shopping-sweep logic is shared with
+        sweep_shopping() via _collect_shopping_sweep.
         """
         today = date.today().isoformat()
         with self._write_lock():
@@ -909,30 +976,11 @@ class Vault:
                 else:
                     todo_kept.append(line)
 
-            shopping_swept: list[dict[str, str]] = []
-            shopping_touched: list[str] = []
+            shopping_swept, shopping_touched, shopping_completed, capture_lines = (
+                self._collect_shopping_sweep(today)
+            )
             completed_entries = [f"- completed {today}: {body}" for body in todo_swept]
-            capture_lines: list[str] = []
-
-            for summary in self._scan_shopping_lists():
-                path = self.root / summary.id
-                lines = self._read_for_write(path).split("\n")
-                kept: list[str] = []
-                bodies: list[str] = []
-                for line in lines:
-                    match = _ITEM.match(line)
-                    if match and match.group("box").lower() == "x":
-                        bodies.append(match.group("body"))
-                    else:
-                        kept.append(line)
-                if not bodies:
-                    continue
-                path.write_text("\n".join(kept), encoding="utf-8")
-                shopping_touched.append(summary.id)
-                for body in bodies:
-                    shopping_swept.append({"list": summary.title, "item": body})
-                    completed_entries.append(f"- completed {today}: {body} (from {summary.title})")
-                    capture_lines.append(f"- swept from {summary.title}: {body}")
+            completed_entries.extend(shopping_completed)
 
             if not todo_swept and not shopping_swept:
                 return SweepResult(todo_swept=[], shopping_swept=[])

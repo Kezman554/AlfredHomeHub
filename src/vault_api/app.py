@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 app = FastAPI(
     title="Alfred Vault API",
     description="Obsidian vault content for LAN clients: reads, plus rolling to-do, shopping-list, and inbox writes.",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 app.include_router(health.router)

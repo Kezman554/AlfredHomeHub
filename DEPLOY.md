@@ -18,7 +18,7 @@
 | Port | Service | Notes |
 |---|---|---|
 | 8123 | Home Assistant | Host networking (device discovery) |
-| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/{list_id}` GET/POST add, `/tick`, `/drop`), `/inbox` (GET list, POST capture — body is `text/plain`) |
+| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/sweep` POST clear-bought, `/{list_id}` GET/POST add, `/tick`, `/drop`), `/inbox` (GET list, POST capture — body is `text/plain`) |
 | 8300 | Kanban board + API | The **browser board** — bookmark **`http://192.168.1.100:8300`** on laptop and phone. The React UI is served as static files from the same container, over the board's data API (same origin, so no CORS). **The Pi DB is now authoritative** (migrated from the laptop); the Electron app is dev-only/read-only. API: `/health`, `/stats`, `/projects`, `/projects/{id}` (+ `/workable`, `/done`, `/next-letter`, `POST /append`), `/cards/{id}` (+ `/status`, `/details`, `/notes`, `/prompt`, `/clear-dependencies`, `DELETE`), `/export/json`, `/export/summary`, `/export/all-projects` |
 
 ## Deploy Model
