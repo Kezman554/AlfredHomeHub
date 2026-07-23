@@ -32,9 +32,16 @@ chmod +x "${BACKUP_SCRIPT}" "${RESTORE_SCRIPT}"
 
 # --- 1. Install cron job ------------------------------------------------------
 if [ -f "${RESTIC_ENV_FILE}" ]; then
-    # sh -c so the env file is sourced before the script runs; the offsite leg
+    # bash -c so the env file is sourced before the script runs; the offsite leg
     # switches itself on when it sees RESTIC_REPOSITORY.
-    CRON_CMD="/bin/bash -c '. ${RESTIC_ENV_FILE}; BACKUP_DIR=${BACKUP_DIR} LOG_FILE=${LOG_FILE} KEEP=${KEEP} ${BACKUP_SCRIPT}'"
+    #
+    # `set -a` around the source is what makes this work. The backup script is a
+    # CHILD process, and plain `RESTIC_PASSWORD=...` lines in the env file create
+    # shell variables, which children do not inherit — restic would run with no
+    # password and fail every night while the local leg kept succeeding. set -a
+    # marks everything sourced for export, so the env file works whether or not
+    # its lines say `export`.
+    CRON_CMD="/bin/bash -c 'set -a; . ${RESTIC_ENV_FILE}; set +a; BACKUP_DIR=${BACKUP_DIR} LOG_FILE=${LOG_FILE} KEEP=${KEEP} ${BACKUP_SCRIPT}'"
     echo "Offsite: will source ${RESTIC_ENV_FILE}"
 else
     CRON_CMD="BACKUP_DIR=${BACKUP_DIR} LOG_FILE=${LOG_FILE} KEEP=${KEEP} ${BACKUP_SCRIPT}"

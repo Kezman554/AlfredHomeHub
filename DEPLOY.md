@@ -199,15 +199,61 @@ disk dying. To turn the offsite leg on, create
 `/home/kezman554/.config/kitchensync-restic.env` (chmod 600, **never** in git):
 
 ```bash
-RESTIC_REPOSITORY=b2:<bucket>:kitchensync
-RESTIC_PASSWORD=<repo encryption key — lose this and the backup is unreadable>
-B2_ACCOUNT_ID=<key id>
-B2_ACCOUNT_KEY=<application key>
+export RESTIC_REPOSITORY=b2:<bucket>:kitchensync
+export RESTIC_PASSWORD=<repo encryption key — lose this and the backup is unreadable>
+export B2_ACCOUNT_ID=<key id>          # B2 key ID
+export B2_ACCOUNT_KEY=<application key>
 ```
 
-Then `apt install restic` and re-run `setup-kitchensync-backup.sh`; it detects
-the file and sources it from cron. Until then the log line reads
-`offsite: skipped (RESTIC_REPOSITORY unset)`.
+Native B2 backend, so it is `B2_ACCOUNT_ID` / `B2_ACCOUNT_KEY` — the `AWS_*`
+pair applies only to an S3-style `s3:` repository URL.
+
+`export` matters: the cron sources this file and then runs the backup script as
+a **child process**, and a plain `VAR=value` line is a shell variable that a
+child never inherits. (The cron entry wraps the source in `set -a`, so an env
+file without `export` also works — but write them with `export` and it is
+correct under either.) Get this wrong and the offsite leg fails every night
+while the local leg keeps succeeding, which is easy not to notice.
+
+Optional retention, with the defaults the script uses:
+`RESTIC_KEEP_DAILY=7`, `RESTIC_KEEP_WEEKLY=4`, `RESTIC_KEEP_MONTHLY=6`.
+
+Then:
+
+```bash
+chmod 600 /home/kezman554/.config/kitchensync-restic.env
+sudo apt install restic
+~/projects/AlfredHomeHub/scripts/setup-kitchensync-backup.sh   # detects the file
+```
+
+Setup prints `Offsite: will source …` when it finds the file. **Verify the leg
+actually ran** — do not trust the absence of an error:
+
+```bash
+tail -1 /home/kezman554/logs/kitchensync-backup.log
+#   want: offsite: restic OK -> b2:<bucket>:kitchensync
+#   not:  offsite: skipped (RESTIC_REPOSITORY unset)   <- file not picked up
+#   not:  offsite: RESTIC FAILED                       <- credentials/bucket wrong
+
+set -a; . /home/kezman554/.config/kitchensync-restic.env; set +a
+restic snapshots        # the archives really in B2
+```
+
+Then prove a restore **from B2**, not just from the local archive — that is the
+copy that matters when the Pi is gone:
+
+```bash
+restic restore latest --target /tmp/b2-drill
+scripts/restore-kitchensync.sh --drill /tmp/b2-drill/home/kezman554/backups/kitchensync/kitchensync-*.tar.gz
+```
+
+Until any of this is done the log reads `offsite: skipped (RESTIC_REPOSITORY
+unset)` and the household data exists **only on the Pi's disk**.
+
+> **`RESTIC_PASSWORD` is not recoverable.** It encrypts the repo; Backblaze
+> cannot reset it and neither can you. Lose it and every offsite snapshot is
+> permanently unreadable, however intact the bytes in B2 are. Store it
+> somewhere that survives the Pi — a password manager, not just this file.
 
 ### Vault snapshot
 
