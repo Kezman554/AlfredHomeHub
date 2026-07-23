@@ -5,6 +5,7 @@
 #   8123 — Home Assistant
 #   8200 — Vault API (vault content + rolling to-do writes for LAN clients)
 #   8300 — Kanban board + API (browser board UI + HTTP over its data layer)
+#   8400 — KitchenSync (recipes, meal plan, pantry, shopping — PWA + API)
 
 services:
   homeassistant:
@@ -102,3 +103,87 @@ services:
       - "8300:8300"
 
     restart: unless-stopped
+
+  kitchensync:
+    container_name: kitchensync
+    # Built from the SEPARATE KitchenSync repo, cloned as a sibling of
+    # AlfredHomeHub on the Pi (~/projects/KitchenSync), exactly like kanban-api.
+    # Context is that repo root because its Dockerfile needs both app/ and
+    # frontend/ — the image is multi-stage and builds the React PWA too, so
+    # 8400 is the browser app itself, not just an API.
+    # Relative to THIS file's dir (docker/): ../../KitchenSync.
+    build:
+      context: ${KITCHENSYNC_REPO_PATH:-../../KitchenSync}
+      dockerfile: Dockerfile
+
+    environment:
+      # Absolute paths inside the container, matching the volume below. A
+      # relative path would resolve against the working directory and die with
+      # the container.
+      DATABASE_URL: sqlite:////data/kitchensync.db
+      MEDIA_DIR: /data/media
+      FRONTEND_DIR: /app/frontend_dist
+
+      # Drives "today" and the plan week. NOT the container clock, which is UTC:
+      # without this, /api/meals/today is wrong between midnight and 01:00 BST.
+      TIMEZONE: Europe/London
+
+      # Applies pending migrations on boot, so a pull plus an up is the whole
+      # deploy. The schema is owned by Alembic — never create_all.
+      AUTO_MIGRATE: "true"
+
+      # Same-origin: this app serves its own bundle, so no response should ever
+      # carry access-control-allow-origin.
+      CORS_ENABLED: "false"
+
+      # Vault path inside the container (matches the mount below). POST
+      # /api/export/run writes the nightly snapshot here, commits and pushes.
+      VAULT_DIR: /vault
+      # Non-interactive SSH for that push, same as vault-api and kanban-api.
+      # accept-new tolerates a missing github.com known_hosts entry without
+      # ever accepting a *changed* host key.
+      GIT_SSH_COMMAND: ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+
+    volumes:
+      # HOUSEHOLD DATA — the SQLite DB and the uploaded recipe images both live
+      # under /data, so one volume holds both. Survives `docker compose down`,
+      # a rebuild and an image change; `down -v` destroys it. Nothing here is
+      # recoverable from git, which is what the backup drill is for.
+      - kitchensync-data:/data
+      # The vault clone, read-write: POST /api/export/run writes the snapshot,
+      # commits and pushes. Shares the vault write lock
+      # (.git/alfred-write.lock) with vault-sync, the vault API and the kanban
+      # export, so all four serialise.
+      - ${VAULT_HOST_PATH:-/home/kezman554/alfred-vault}:/vault
+      # The Pi user's SSH dir for the deploy key (write access) + known_hosts.
+      # Read-only; the container's uid 1000 (kitchensync) matches kezman554 so
+      # the key's 600 perms still allow reading. Lands at /home/kitchensync/.ssh
+      # (git's $HOME inside this image).
+      - /home/kezman554/.ssh:/home/kitchensync/.ssh:ro
+      - /etc/localtime:/etc/localtime:ro
+
+    # Published on all interfaces so phones in the kitchen can reach it — that
+    # is the actual delivery, not just curl from the Pi.
+    ports:
+      - "8400:8400"
+
+    healthcheck:
+      # /health is deliberately bare and outside /api — a probe should not need
+      # to know the API's layout. Healthy only once the app answers, which is
+      # after migrations have run. No curl in the image; python is right there.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8400/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous: first boot on a fresh volume runs the migrations.
+      start_period: 40s
+
+    restart: unless-stopped
+
+volumes:
+  # Named explicitly so the volume is `kitchensync-data`, NOT prefixed with the
+  # compose project name (which is `docker`, this file's directory). The backup
+  # script mounts it by name from outside compose — a project-prefixed name
+  # would silently back up nothing.
+  kitchensync-data:
+    name: kitchensync-data

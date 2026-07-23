@@ -20,6 +20,7 @@
 | 8123 | Home Assistant | Host networking (device discovery) |
 | 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/sweep` POST clear-bought, `/{list_id}` GET/POST add, `/tick`, `/drop`), `/inbox` (GET list, POST capture — body is `text/plain`) |
 | 8300 | Kanban board + API | The **browser board** — bookmark **`http://192.168.1.100:8300`** on laptop and phone. The React UI is served as static files from the same container, over the board's data API (same origin, so no CORS). **The Pi DB is now authoritative** (migrated from the laptop); the Electron app is dev-only/read-only. API: `/health`, `/stats`, `/projects`, `/projects/{id}` (+ `/workable`, `/done`, `/next-letter`, `POST /append`), `/cards/{id}` (+ `/status`, `/details`, `/notes`, `/prompt`, `/clear-dependencies`, `DELETE`), `/export/json`, `/export/summary`, `/export/all-projects` |
+| 8400 | KitchenSync | Recipes, meal plan, pantry, shopping — **PWA + API in one container**, same origin. Bookmark **`http://192.168.1.100:8400`** on laptop and phone. API: `/health`, `/docs`, `/api/recipes`, `/api/meals` (+ `/today`, `/{id}/cook`), `/api/pantry`, `/api/shopping-list` (+ `/generate`, `/items`), `/api/images` (POST upload), `/api/media/*`, `/api/export/run` (vault snapshot) |
 
 ## Deploy Model
 
@@ -103,6 +104,143 @@ curl -s http://192.168.1.100:8300/stats # {"projects":9,"cards":...,"done":107,.
 > like vault-api. The browser only *triggers* the export — it never writes the
 > vault itself, so the Pi stays the single writer. The Electron app's "sync to
 > vault" must still not be used.
+
+## KitchenSync (two-repo build)
+
+Recipes, meal planning, pantry and shopping list — one container serving both
+the React PWA and the API from the same origin (so no CORS). Like the Kanban
+API it lives in a **separate repo** (`git@github.com:Kezman554/KitchenSync.git`,
+**private**) and is defined here but **built from there**, cloned as a sibling:
+
+```
+~/projects/
+  AlfredHomeHub/     # this repo — has docker/docker-compose.yml (kitchensync service)
+  Kanban_App/
+  KitchenSync/       # the KitchenSync repo — Dockerfile at its root
+```
+
+Build context is `../../KitchenSync` (relative to `docker/`); override with
+`KITCHENSYNC_REPO_PATH`.
+
+> **Private repo — clone via the `github-user` SSH alias.** The Pi's
+> `~/.ssh/config` pins `github.com` to the **ObsidianVault deploy key**, which
+> cannot see other repos. A `github-user` alias (added to that file, pointing at
+> `~/.ssh/id_ed25519`, the full-access user key) exists for repos the deploy key
+> can't reach. The `github.com` entry is deliberately untouched — the containers'
+> vault pushes depend on it.
+
+### First-time bring-up
+
+```bash
+# On the Pi: clone KitchenSync beside AlfredHomeHub (once) — note the alias
+git clone git@github-user:Kezman554/KitchenSync.git ~/projects/KitchenSync
+
+# On the Pi: build + start
+cd ~/projects/AlfredHomeHub/docker && docker compose up -d --build kitchensync
+
+# On the Pi: install the nightly snapshot + backup crons (once).
+# The backup script also runs a restore DRILL as its last step — setup is not
+# finished until a restore has been proved.
+~/projects/AlfredHomeHub/scripts/setup-kitchensync-export.sh
+~/projects/AlfredHomeHub/scripts/setup-kitchensync-backup.sh
+```
+
+### Pull-and-restart loop (routine redeploy)
+
+```bash
+cd ~/projects/KitchenSync && git pull --ff-only && \
+cd ~/projects/AlfredHomeHub && git pull --ff-only && \
+docker compose -f docker/docker-compose.yml up -d --build kitchensync
+```
+
+`AUTO_MIGRATE=true`, so pending Alembic migrations apply on boot — there is no
+separate migrate step. **Take a backup immediately before any deploy that
+carries a migration** (`scripts/kitchensync-backup.sh`).
+
+### Data — what must survive
+
+Both live under `/data` on the **named volume `kitchensync-data`**, and neither
+is in git:
+
+| Path | Holds |
+|---|---|
+| `/data/kitchensync.db` | recipes, meal plans, pantry, shopping list, activity history |
+| `/data/media/` | uploaded recipe images |
+
+`docker compose down`, a rebuild and an image change all leave the volume alone.
+**`docker compose down -v` destroys it** — that flag deletes household data.
+
+The volume is pinned to the literal name `kitchensync-data` (via `name:` in the
+compose `volumes:` block) rather than the compose-project-prefixed
+`docker_kitchensync-data`, because the backup script mounts it by name from
+outside compose.
+
+### Backup + restore
+
+```bash
+scripts/kitchensync-backup.sh              # stop app, tar volume, verify, rotate, restart
+scripts/restore-kitchensync.sh --drill     # restore newest archive to a SCRATCH volume + verify
+scripts/restore-kitchensync.sh --live ARCHIVE   # overwrite live data (prompts for RESTORE)
+```
+
+The backup briefly stops the container so the SQLite copy is consistent (a live
+tar can catch a torn write plus a stale `-wal`); the restart is in a trap, so an
+interrupted run still brings the app back. It verifies the archive is readable
+and contains the DB *before* rotating older ones away.
+
+The drill restores into a throwaway volume and checks, using the **app image**
+(same Python, SQLite and Alembic as production): the DB opens, passes
+`PRAGMA integrity_check`, sits at the image's Alembic **head**, holds rows in all
+four modules, and that **every image the DB references resolves in `media/`**.
+
+**Offsite (restic → B2) is wired but not enabled** — the local leg protects
+against a bad migration or a mistaken delete; it does **not** survive the Pi's
+disk dying. To turn the offsite leg on, create
+`/home/kezman554/.config/kitchensync-restic.env` (chmod 600, **never** in git):
+
+```bash
+RESTIC_REPOSITORY=b2:<bucket>:kitchensync
+RESTIC_PASSWORD=<repo encryption key — lose this and the backup is unreadable>
+B2_ACCOUNT_ID=<key id>
+B2_ACCOUNT_KEY=<application key>
+```
+
+Then `apt install restic` and re-run `setup-kitchensync-backup.sh`; it detects
+the file and sources it from cron. Until then the log line reads
+`offsite: skipped (RESTIC_REPOSITORY unset)`.
+
+### Vault snapshot
+
+`POST /api/export/run` writes `4-dev-hub/kitchensync-snapshot.json` and
+`kitchensync-summary.md` into the vault, commits as Alfred and pushes — the same
+single-writer pattern as the kanban export, under the shared vault write lock
+(`.git/alfred-write.lock`), so it serialises with vault-sync and the other
+exporters. A readable mirror, **not** a backup: no recipes, nothing restorable.
+
+It **commits only when the content changed** — the snapshot carries no
+generated-at timestamp, so an unchanged household adds no commit. A quiet log
+reading `no-op: vault already up to date` is the normal, correct result.
+
+### Nightly cron slots
+
+All sit 7 minutes past a `*/10` boundary, clear of vault-sync:
+
+| Time | Job |
+|---|---|
+| `*/10` | vault-sync |
+| 03:07 | to-do sweep |
+| 03:17 | kanban export |
+| 03:27 | kanban backup |
+| 03:37 | **KitchenSync vault snapshot** (`kitchensync-export.sh`) |
+| 03:47 | **KitchenSync backup** (`kitchensync-backup.sh`) — after the snapshot, since it briefly stops the container |
+
+### Verify
+
+```bash
+curl -s http://192.168.1.100:8400/health        # {"status":"ok","version":"0.1.0"}
+curl -s http://192.168.1.100:8400/api/recipes   # data
+curl -I http://192.168.1.100:8400/planner       # 200 text/html — SPA deep link
+```
 
 ## Browser board (UI-port)
 

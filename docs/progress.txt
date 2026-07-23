@@ -435,3 +435,50 @@ Alfred Home Hub — Progress Log
 - sweep-todo.sh (host cron script) updated + pulled on the Pi: the nightly log
   now reports shopping counts too, so a shopping-only sweep no longer logs as a
   no-op. No container rebuild (host script).
+
+2026-07-23 (KitchenSync — deployed live on the Pi, port 8400)
+- New `kitchensync` service in docker/docker-compose.yml, mirroring kanban-api:
+  builds from the SEPARATE KitchenSync repo cloned as a sibling
+  (~/projects/KitchenSync, context ../../KitchenSync), single named volume
+  kitchensync-data -> /data (SQLite DB + MEDIA_DIR together), vault clone rw +
+  ~/.ssh ro for the snapshot push, 8400:8400, healthcheck on /health,
+  restart: unless-stopped. Volume pinned to the literal name via `name:` so it
+  is not project-prefixed — the backup script mounts it from outside compose.
+- Two build blockers found and fixed (the image had never been built):
+  1. `npm ci` failed on the Pi — package-lock.json was generated on Windows and
+     lacked @emnapi/core+runtime 1.11.2, transitives of rolldown's wasm binding
+     that only Linux resolution pulls in. Regenerating the lockfile ON linux/
+     arm64 fixed it (50 lines); the corrected lockfile came back to the laptop.
+  2. Bumped the frontend build stage node:22 -> node:24, so the image's npm
+     major matches the npm that owns the lockfile.
+  pillow and greenlet both had arm64 wheels — build-essential NOT needed.
+- Closed the whole "not verified" list, all from the LAPTOP over the LAN (not
+  loopback): linux/arm64, SQLite 3.40.1 (past the 3.30 floor, so the startup
+  assertion passed), healthy, uid 1000 writes /data, migrations ran empty->head
+  (base -> 8dfc8c93402c) via Alembic with no create_all, no
+  access-control-allow-origin, / serves the SPA, /planner deep-link serves the
+  shell, unknown /api/* is 404 application/json, /api/media/ serves an upload,
+  /health bare, /docs Swagger. Recipe + image survived container destroy/recreate.
+- Vault snapshot wired: first POST /api/export/run exported both files to
+  4-dev-hub/, committed as Alfred and pushed; second run returned "nochange"
+  and added no commit (diff guard holds). Nightly cron at 03:37.
+- Backup + restore drill PASSED (the gate). scripts/kitchensync-backup.sh
+  (stop -> tar volume -> verify readable + contains the DB -> rotate -> restart
+  via trap), restore-kitchensync.sh (--drill to a scratch volume, --live with a
+  typed confirmation), setup-kitchensync-backup.sh (installs the 03:47 cron AND
+  runs a drill, so setup is not done until a restore is proved). Drill verifies
+  inside the app image: DB opens, integrity_check ok, schema at head, rows in
+  all four modules, every DB-referenced image resolves in media/.
+  Two bugs caught while drilling: `docker run` without -i gave the verifier no
+  stdin, so `python -` ran an empty program and exited 0 — a check that always
+  passed; and wrong table-name guesses printed "n/a" instead of failing. Both
+  fixed, then NEGATIVE-tested: deleting the media file makes the drill exit 1.
+- Test data (all four modules) removed after the drill; household starts empty.
+- Pi ~/.ssh/config: added a `github-user` alias -> id_ed25519, because the
+  existing `github.com` entry pins IdentitiesOnly to the ObsidianVault deploy
+  key, which cannot see the private KitchenSync repo. The github.com entry was
+  deliberately left alone — the containers' vault pushes depend on it.
+- OUTSTANDING: offsite backup (restic -> B2) is coded and wired but NOT enabled
+  — needs a B2 bucket + credentials in
+  /home/kezman554/.config/kitchensync-restic.env. Local backups are live and
+  drilled; they do not survive the Pi's disk dying.
