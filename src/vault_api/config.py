@@ -28,3 +28,30 @@ WRITE_LOCK_TIMEOUT = float(os.getenv("VAULT_WRITE_LOCK_TIMEOUT", "30"))
 
 # Per-git-command timeout (pull/push go to GitHub over the network).
 GIT_TIMEOUT = float(os.getenv("VAULT_GIT_TIMEOUT", "60"))
+
+# --- Home Assistant -----------------------------------------------------------
+# The family calendar is a shared Google Calendar linked into Home Assistant.
+# We read it THROUGH HA rather than Google directly: HA already holds the Google
+# OAuth credentials and refreshes them, so this service needs no Google auth of
+# its own and no token to keep alive.
+#
+# HA runs with network_mode: host, so from inside this container it is reachable
+# at the Pi's LAN address, not at a compose service name.
+HA_BASE_URL = os.getenv("HA_BASE_URL", "http://192.168.1.100:8123").rstrip("/")
+
+# Long-lived access token, minted in HA under the user's profile. REQUIRED and
+# deliberately without a default — a placeholder here would turn a missing token
+# into a puzzling 401 from HA instead of a clear error naming the variable.
+# Passed via the environment, never committed.
+HA_TOKEN = os.getenv("HA_TOKEN")
+
+# The calendar entity to read. Configurable so a second family calendar needs no
+# code change.
+HA_CALENDAR_ENTITY = os.getenv("HA_CALENDAR_ENTITY", "calendar.young_family")
+
+# How long to wait on HA. Short: this sits behind a dashboard tile, where a
+# quick failure beats a hung panel.
+HA_TIMEOUT = float(os.getenv("HA_TIMEOUT", "10"))
+
+# How far ahead GET /calendar/events looks when no end date is given.
+CALENDAR_DEFAULT_DAYS = int(os.getenv("CALENDAR_DEFAULT_DAYS", "7"))

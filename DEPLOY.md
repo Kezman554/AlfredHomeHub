@@ -18,7 +18,7 @@
 | Port | Service | Notes |
 |---|---|---|
 | 8123 | Home Assistant | Host networking (device discovery) |
-| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/sweep` POST clear-bought, `/{list_id}` GET/POST add, `/tick`, `/drop`), `/inbox` (GET list, POST capture — body is `text/plain`) |
+| 8200 | Vault API | Vault content + rolling to-do writes. `http://192.168.1.100:8200` — `/health`, `/chalkboard` (GET/POST, `/tick`, `/drop`, `/sweep`), `/daily-schedule`, `/daily-schedule/week`, `/shopping` (discovery GET/POST create, `/sweep` POST clear-bought, `/{list_id}` GET/POST add, `/tick`, `/drop`), `/inbox` (GET list, POST capture — body is `text/plain`), `/calendar/events` (GET — family calendar, read through Home Assistant) |
 | 8300 | Kanban board + API | The **browser board** — bookmark **`http://192.168.1.100:8300`** on laptop and phone. The React UI is served as static files from the same container, over the board's data API (same origin, so no CORS). **The Pi DB is now authoritative** (migrated from the laptop); the Electron app is dev-only/read-only. API: `/health`, `/stats`, `/projects`, `/projects/{id}` (+ `/workable`, `/done`, `/next-letter`, `POST /append`), `/cards/{id}` (+ `/status`, `/details`, `/notes`, `/prompt`, `/clear-dependencies`, `DELETE`), `/export/json`, `/export/summary`, `/export/all-projects` |
 | 8400 | KitchenSync | Recipes, meal plan, pantry, shopping — **PWA + API in one container**, same origin. Bookmark **`http://192.168.1.100:8400`** on laptop and phone. API: `/health`, `/docs`, `/api/recipes`, `/api/meals` (+ `/today`, `/{id}/cook`), `/api/pantry`, `/api/shopping-list` (+ `/generate`, `/items`), `/api/images` (POST upload), `/api/media/*`, `/api/export/run` (vault snapshot) |
 
@@ -104,6 +104,89 @@ curl -s http://192.168.1.100:8300/stats # {"projects":9,"cards":...,"done":107,.
 > like vault-api. The browser only *triggers* the export — it never writes the
 > vault itself, so the Pi stays the single writer. The Electron app's "sync to
 > vault" must still not be used.
+
+## Family calendar (vault-api → Home Assistant)
+
+`GET http://192.168.1.100:8200/calendar/events` returns the shared Google
+Calendar ("Young Family"). **Read-only** — creating and updating events is a
+later card.
+
+The calendar is read **through Home Assistant**, not from Google directly: HA
+holds the Google OAuth credentials and refreshes them, so vault-api needs no
+Google auth of its own and has no token of its own to keep alive.
+
+```
+vault-api :8200  ──Bearer token──▶  Home Assistant :8123  ──OAuth──▶  Google Calendar
+```
+
+### Configuration
+
+Set in `docker/docker-compose.yml`, with the secret supplied from
+`docker/.env` (**gitignored — never commit the token**):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HA_BASE_URL` | `http://192.168.1.100:8123` | HA runs `network_mode: host`, so this is the Pi's **LAN address** — a compose service name would not resolve. |
+| `HA_TOKEN` | *(none)* | **Required.** Long-lived access token. |
+| `HA_CALENDAR_ENTITY` | `calendar.young_family` | Configurable so a second calendar needs no code change. |
+| `HA_TIMEOUT` | `10` | Seconds. Short: this sits behind a dashboard tile. |
+| `CALENDAR_DEFAULT_DAYS` | `7` | How far ahead a bare request looks. |
+
+Mint the token in HA: **profile → Security → Long-lived access tokens →
+Create token**. Then:
+
+```bash
+# on the Pi
+printf 'HA_TOKEN=%s\n' '<paste-token>' >> ~/projects/AlfredHomeHub/docker/.env
+chmod 600 ~/projects/AlfredHomeHub/docker/.env
+cd ~/projects/AlfredHomeHub/docker && docker compose up -d --build vault-api
+```
+
+`HA_TOKEN` deliberately defaults to **empty** rather than being marked required
+in compose. Compose parses the whole file on any `up`, so a `:?` guard would
+block the entire stack — Home Assistant and KitchenSync included — over a
+missing calendar token. Instead only `/calendar/events` fails, with a 500
+naming the variable.
+
+### Response shape
+
+```json
+{
+  "calendar": "young_family",
+  "events": [
+    {"summary": "France", "start": "2026-07-24", "end": "2026-07-25",
+     "all_day": true, "location": null, "description": null}
+  ]
+}
+```
+
+HA distinguishes all-day from timed events **structurally** — `{"date": …}` vs
+`{"dateTime": …}` — and that is what sets `all_day`. All-day `end` is passed
+through **exclusive**, exactly as Google and HA give it: a single day on the
+24th ends `2026-07-25`. Adjusting it would make single-day and multi-day events
+disagree about what `end` means.
+
+Events are sorted by start, with a day's all-day events ahead of its timed ones.
+A malformed event is skipped rather than failing the request — one bad entry on
+a shared calendar must not blank the dashboard panel.
+
+### Errors
+
+| Condition | Status |
+|---|---|
+| `HA_TOKEN` unset | **500**, naming the variable |
+| HA unreachable, or non-200 (e.g. an expired token → 401) | **502**, with the upstream status |
+| `end` before `start` | **422** (HA would answer `[]`, which reads as "nothing on") |
+| Unparseable date | **422** |
+
+The token never appears in an error body or a log line.
+
+### Verify
+
+```bash
+curl -s "http://192.168.1.100:8200/calendar/events" | python3 -m json.tool
+curl -s "http://192.168.1.100:8200/calendar/events?start=2026-07-24&end=2026-07-26"
+```
 
 ## KitchenSync (two-repo build)
 

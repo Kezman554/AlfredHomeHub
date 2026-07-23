@@ -41,6 +41,21 @@ services:
       # ever accepting a *changed* host key.
       GIT_SSH_COMMAND: ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
 
+      # --- Family calendar, read through Home Assistant ---
+      # HA runs with network_mode: host, so from this container it is the Pi's
+      # LAN address — not a compose service name, which would not resolve.
+      HA_BASE_URL: ${HA_BASE_URL:-http://192.168.1.100:8123}
+      HA_CALENDAR_ENTITY: ${HA_CALENDAR_ENTITY:-calendar.young_family}
+      # SECRET — a long-lived access token from HA. Supplied via docker/.env
+      # (gitignored), never written here.
+      #
+      # Deliberately defaulted to empty rather than `:?` (which would refuse to
+      # start): a missing token must not stop the vault, shopping and inbox
+      # endpoints serving, nor block the rest of the stack, since compose parses
+      # this whole file for any `up`. Instead GET /calendar/events alone answers
+      # 500 naming the variable.
+      HA_TOKEN: ${HA_TOKEN:-}
+
     volumes:
       # The vault clone on the Pi, kept current by the vault-sync cron.
       # Read-write: the chalkboard write endpoints edit, commit, and push.
