@@ -482,3 +482,39 @@ Alfred Home Hub — Progress Log
   — needs a B2 bucket + credentials in
   /home/kezman554/.config/kitchensync-restic.env. Local backups are live and
   drilled; they do not survive the Pi's disk dying.
+
+2026-07-23 (KitchenSync offsite backup — restic to B2, live and drilled)
+- B2 repo b2:alfred-pi-backup:kitchensync initialised; restic 0.18.0 (arm64) on
+  the Pi. Credentials in ~/.config/kitchensync-restic.env, chmod 600, written
+  with umask 077 so they were never briefly world-readable. Not in git.
+- Nightly 03:47 cron now carries the offsite leg. Verified for real: the log
+  line reads "offsite: restic OK -> b2:alfred-pi-backup:kitchensync", and
+  `restic snapshots` lists the archives actually in B2.
+- Three bugs found by doing it rather than assuming:
+  1. The cron sourced the env file then ran the backup as a CHILD process, so
+     plain VAR=value lines (shell variables, not exported) never reached it.
+     Tested on the Pi: the old wiring passed <EMPTY> for all four. Wrapped the
+     source in `set -a`. Without this the offsite leg would have silently
+     skipped every night while the local leg kept succeeding.
+  2. setup-kitchensync-backup.sh sourced credentials only into the cron entry,
+     not into its OWN test backup — so setup configured the offsite leg,
+     skipped it, and printed success. The one run most likely to catch a bad
+     key was the one that never tried. Now sources it the same way cron does,
+     and hard-fails if credentials exist but the log is not "offsite: restic OK".
+  3. The restore drill's image check counted soft-deleted recipes. DELETE is a
+     SOFT delete (is_deleted); the row and its image path survive. A deleted
+     recipe whose file was later cleaned up would have failed the drill forever
+     over data already thrown away. Scoped to live recipes; soft-deleted
+     dangling refs are now a note, not a failure.
+- B2 RESTORE DRILL PASSED — the real one. Seeded a recipe + image, a meal, a
+  pantry item and a shopping item; backed up; MOVED THE LOCAL ARCHIVES ASIDE so
+  nothing could satisfy the drill from disk; `restic restore latest` pulled the
+  archive back from B2; verified integrity_check ok, schema at head
+  8dfc8c93402c, rows in all four modules, referenced image resolves. Exit 0.
+- Test data purged afterwards (rows AND media together, so no dangling refs);
+  household DB is empty and the app is healthy. 3 snapshots in B2.
+- NOTE: the B2 application key was pasted in a chat transcript. It appears
+  bucket-scoped, but rotating it in Backblaze is cheap and worth doing.
+  RESTIC_PASSWORD is unrecoverable by design — it must also live somewhere off
+  the Pi (password manager), or the offsite copy is unreadable exactly when it
+  is needed.

@@ -193,9 +193,9 @@ The drill restores into a throwaway volume and checks, using the **app image**
 `PRAGMA integrity_check`, sits at the image's Alembic **head**, holds rows in all
 four modules, and that **every image the DB references resolves in `media/`**.
 
-**Offsite (restic → B2) is wired but not enabled** — the local leg protects
-against a bad migration or a mistaken delete; it does **not** survive the Pi's
-disk dying. To turn the offsite leg on, create
+**Offsite (restic → B2) is LIVE as of 2026-07-23** — repo
+`b2:alfred-pi-backup:kitchensync`, restic 0.18.0, running nightly at 03:47 and
+**drilled end-to-end from B2** (see below). Credentials live in
 `/home/kezman554/.config/kitchensync-restic.env` (chmod 600, **never** in git):
 
 ```bash
@@ -239,16 +239,35 @@ set -a; . /home/kezman554/.config/kitchensync-restic.env; set +a
 restic snapshots        # the archives really in B2
 ```
 
-Then prove a restore **from B2**, not just from the local archive — that is the
-copy that matters when the Pi is gone:
+### The B2 restore drill — done 2026-07-23, repeat before trusting it again
+
+Proving a restore **from B2** is the only thing that tests the copy that matters
+once the Pi is gone. A local-archive drill does not: it passes even if nothing
+was ever uploaded.
+
+Move the local archives aside first, or the drill can quietly satisfy itself
+from disk and tell you nothing:
 
 ```bash
+set -a; . /home/kezman554/.config/kitchensync-restic.env; set +a
+
+mv ~/backups/kitchensync ~/backups/kitchensync-HIDDEN     # force a real B2 fetch
 restic restore latest --target /tmp/b2-drill
-scripts/restore-kitchensync.sh --drill /tmp/b2-drill/home/kezman554/backups/kitchensync/kitchensync-*.tar.gz
+scripts/restore-kitchensync.sh --drill \
+  /tmp/b2-drill/home/kezman554/backups/kitchensync/kitchensync-*.tar.gz
+
+mv ~/backups/kitchensync-HIDDEN ~/backups/kitchensync     # put them back
+rm -rf /tmp/b2-drill && docker volume rm kitchensync-restore-drill
 ```
 
-Until any of this is done the log reads `offsite: skipped (RESTIC_REPOSITORY
-unset)` and the household data exists **only on the Pi's disk**.
+**Result on 2026-07-23:** with a recipe + image, a meal, a pantry item and a
+shopping item in the DB — backed up, uploaded, local copies hidden, pulled back
+from B2 and verified: `integrity_check` ok, schema at head `8dfc8c93402c`, rows
+present in all four modules, the referenced image resolved. `RESTORE VERIFIED`,
+exit 0. Test data was purged afterwards; the household DB is empty.
+
+Worth repeating whenever the schema changes materially, and after any change to
+the backup scripts.
 
 > **`RESTIC_PASSWORD` is not recoverable.** It encrypts the repo; Backblaze
 > cannot reset it and neither can you. Lose it and every offsite snapshot is
