@@ -55,10 +55,30 @@ CRON_ENTRY="${CRON_SCHEDULE} ${CRON_CMD}"
 } | crontab -
 
 # --- 2. Initial backup --------------------------------------------------------
+# Source the env file here too, exactly as the cron entry does. Without this the
+# setup run exercises only the LOCAL leg and reports success while the offsite
+# leg it just configured is skipped — the one run most likely to catch a wrong
+# bucket or a bad key would be the one that never tries.
 echo
 echo "Running one backup..."
+if [ -f "${RESTIC_ENV_FILE}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${RESTIC_ENV_FILE}"
+    set +a
+fi
 BACKUP_DIR="${BACKUP_DIR}" LOG_FILE="${LOG_FILE}" KEEP="${KEEP}" "${BACKUP_SCRIPT}"
 echo "  $(tail -1 "${LOG_FILE}")"
+
+# The offsite leg is reported inside that log line. Fail loudly here rather than
+# printing a cheerful summary over a backup that never left the Pi.
+if [ -f "${RESTIC_ENV_FILE}" ] && ! tail -1 "${LOG_FILE}" | grep -q "offsite: restic OK"; then
+    echo
+    echo "ERROR: credentials are configured but the offsite leg did not succeed:" >&2
+    echo "  $(tail -1 "${LOG_FILE}")" >&2
+    echo "Check the bucket name, the B2 key, and that 'restic snapshots' works." >&2
+    exit 1
+fi
 
 # --- 3. Restore drill ---------------------------------------------------------
 echo

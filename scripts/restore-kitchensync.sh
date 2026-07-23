@@ -155,11 +155,21 @@ for table in ("recipes", "meal_plans", "pantry_items", "shopping_list_items",
         problems.append(f"table {table} missing from restored DB ({exc})")
 print("ok   rows: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
 
-# Every image the DB references must exist on disk, or the restore silently
-# yields recipes with broken photos.
+# Every image a LIVE recipe references must exist on disk, or the restore
+# silently yields recipes with broken photos.
+#
+# Scoped to is_deleted = 0 on purpose. Recipe deletion is a SOFT delete: the row
+# survives with its image path intact. A soft-deleted recipe whose file has since
+# been cleaned up is not a broken restore, and failing on it would make the drill
+# cry wolf forever over data the household already threw away. Those are counted
+# and reported, just not treated as failures.
+recipe_cols = [c[1] for c in con.execute("PRAGMA table_info(recipes)")]
+live_filter = " AND is_deleted = 0" if "is_deleted" in recipe_cols else ""
+
 try:
     refs = [r[0] for r in con.execute(
-        "SELECT image FROM recipes WHERE image IS NOT NULL AND image != ''")]
+        "SELECT image FROM recipes WHERE image IS NOT NULL AND image != ''"
+        + live_filter)]
 except sqlite3.Error:
     refs = []
 
@@ -173,9 +183,22 @@ if refs:
     if missing:
         problems.append(f"{len(missing)}/{len(refs)} referenced images missing: {missing[:5]}")
     else:
-        print(f"ok   all {len(refs)} referenced images resolve in media/")
+        print(f"ok   all {len(refs)} live referenced images resolve in media/")
 else:
-    print("ok   no image references to check")
+    print("ok   no live image references to check")
+
+# Soft-deleted recipes with vanished images: reported, never fatal.
+if live_filter:
+    dangling = 0
+    for (ref,) in con.execute(
+        "SELECT image FROM recipes WHERE image IS NOT NULL AND image != ''"
+        " AND is_deleted = 1"
+    ):
+        if not (media / ref.rsplit("/", 1)[-1]).is_file():
+            dangling += 1
+    if dangling:
+        print(f"note {dangling} deleted recipe(s) reference images no longer on"
+              " disk — expected after cleanup, not a restore fault")
 
 n_media = len(list(media.glob("*"))) if media.is_dir() else 0
 print(f"ok   media/ holds {n_media} file(s)")
